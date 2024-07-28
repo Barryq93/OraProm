@@ -1,0 +1,88 @@
+2024-07-26 11:24:21,417 - root - CRITICAL - Error initializing Prometheus exporter: 'CustomExporter' object has no attribute 'init_gauge'
+2024-07-26 11:27:30,724 - root - CRITICAL - Fatal error: name 'DB2Connection' is not defined
+2024-07-26 15:03:05,813 - root - CRITICAL - Fatal error: name 'DB2Connection' is not defined
+2024-07-26 15:05:15,967 - root - CRITICAL - Fatal error: __init__() got an unexpected keyword argument 'db_host'
+2024-07-26 15:07:36,443 - root - CRITICAL - Fatal error: a coroutine was expected, got None
+2024-07-26 15:12:30,316 - root - CRITICAL - Fatal error: no running event loop
+2024-07-26 15:13:27,800 - root - CRITICAL - Fatal error: no running event loop
+2024-07-26 15:14:43,239 - root - CRITICAL - Fatal error: no running event loop
+Traceback (most recent call last):
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 271, in <module>
+    tasks.append(asyncio.create_task(main(config_connection, config_queries, exporter, default_time_interval)))
+  File "C:\Users\BarryDesktop\AppData\Local\Programs\Python\Python39\lib\asyncio\tasks.py", line 360, in create_task
+    loop = events.get_running_loop()
+RuntimeError: no running event loop
+2024-07-26 15:17:13,019 - root - ERROR - Error executing query Lockwaits: name 're' is not defined
+Traceback (most recent call last):
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in query_set
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in <genexpr>
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+NameError: name 're' is not defined
+2024-07-26 15:17:13,049 - root - ERROR - Error executing query Applications count: name 're' is not defined
+Traceback (most recent call last):
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in query_set
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in <genexpr>
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+NameError: name 're' is not defined
+2024-07-26 15:17:13,152 - root - ERROR - Error executing query Tablespace Utilization: name 're' is not defined
+Traceback (most recent call last):
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in query_set
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in <genexpr>
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+NameError: name 're' is not defined
+2024-07-26 15:17:13,205 - db2Prom.ora - ERROR - [192.168.50.72:1521/XE] DPY-6005: cannot connect to database (CONNECTION_ID=GxGaVH4cJAalz7c51xbaMw==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-26 15:17:13,251 - db2Prom.ora - ERROR - [192.168.50.72:1521/XE] DPY-6005: cannot connect to database (CONNECTION_ID=zzrGOLZKLenKIFRvdHh5RQ==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-26 15:17:13,252 - root - ERROR - Error executing query Oracle Sessions: name 're' is not defined
+Traceback (most recent call last):
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in query_set
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in <genexpr>
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+NameError: name 're' is not defined
+2024-07-26 15:17:13,299 - db2Prom.ora - ERROR - [192.168.50.72:1521/XE] DPY-6005: cannot connect to database (CONNECTION_ID=kb6SvB7Idbqtreu+smln5A==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-26 15:17:13,300 - root - ERROR - Error executing query Oracle Tablespace Usage: name 're' is not defined
+Traceback (most recent call last):
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in query_set
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in <genexpr>
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+NameError: name 're' is not defined
+2024-07-26 15:17:13,324 - db2Prom.ora - ERROR - [192.168.50.72:1521/XE] DPY-6005: cannot connect to database (CONNECTION_ID=Z7KUVqFhQsxAxMcBvNHg7Q==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-26 15:17:13,348 - db2Prom.ora - ERROR - [192.168.50.72:1521/XE] DPY-6005: cannot connect to database (CONNECTION_ID=xGKRX112Je8jfuXYC3CY7w==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-26 15:17:23,031 - root - ERROR - Error executing query Lockwaits: name 're' is not defined
+Traceback (most recent call last):
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in query_set
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in <genexpr>
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+NameError: name 're' is not defined
+2024-07-26 15:17:28,067 - root - ERROR - Error executing query Applications count: name 're' is not defined
+Traceback (most recent call last):
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in query_set
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in <genexpr>
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+NameError: name 're' is not defined
+2024-07-26 15:17:28,293 - db2Prom.ora - ERROR - [192.168.50.72:1521/XE] DPY-6005: cannot connect to database (CONNECTION_ID=iV3BefCWy0tL62ti1Nusmg==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-26 15:17:28,293 - root - ERROR - Error executing query Oracle Sessions: name 're' is not defined
+Traceback (most recent call last):
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in query_set
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in <genexpr>
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+NameError: name 're' is not defined

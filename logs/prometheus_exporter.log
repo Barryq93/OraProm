@@ -1,0 +1,234 @@
+2024-07-26 11:24:21,416 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-26 11:24:21,417 - root - CRITICAL - Error initializing Prometheus exporter: 'CustomExporter' object has no attribute 'init_gauge'
+2024-07-26 11:27:30,669 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-26 11:27:30,669 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_count] created
+2024-07-26 11:27:30,670 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_maxwait_seconds] created
+2024-07-26 11:27:30,670 - db2Prom.prometheus - INFO - [GAUGE] [db2_applications_count] created
+2024-07-26 11:27:30,670 - db2Prom.prometheus - INFO - [GAUGE] [db2_log_utilization_percent] created
+2024-07-26 11:27:30,721 - db2Prom.prometheus - INFO - [GAUGE] [db2_active_connections] created
+2024-07-26 11:27:30,721 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_used_size] created
+2024-07-26 11:27:30,722 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_total_size] created
+2024-07-26 11:27:30,722 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_used] created
+2024-07-26 11:27:30,722 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_available] created
+2024-07-26 11:27:30,723 - db2Prom.prometheus - INFO - [GAUGE] [oracle_session_count] created
+2024-07-26 11:27:30,723 - db2Prom.prometheus - INFO - [GAUGE] [oracle_tablespace_used_size] created
+2024-07-26 11:27:30,723 - db2Prom.prometheus - INFO - [GAUGE] [oracle_redo_log_used_size] created
+2024-07-26 11:27:30,724 - db2Prom.prometheus - INFO - [GAUGE] [oracle_active_transactions] created
+2024-07-26 11:27:30,724 - root - CRITICAL - Fatal error: name 'DB2Connection' is not defined
+2024-07-26 15:03:05,808 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-26 15:03:05,808 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_count] created
+2024-07-26 15:03:05,808 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_maxwait_seconds] created
+2024-07-26 15:03:05,809 - db2Prom.prometheus - INFO - [GAUGE] [db2_applications_count] created
+2024-07-26 15:03:05,809 - db2Prom.prometheus - INFO - [GAUGE] [db2_log_utilization_percent] created
+2024-07-26 15:03:05,809 - db2Prom.prometheus - INFO - [GAUGE] [db2_active_connections] created
+2024-07-26 15:03:05,810 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_used_size] created
+2024-07-26 15:03:05,810 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_total_size] created
+2024-07-26 15:03:05,810 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_used] created
+2024-07-26 15:03:05,811 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_available] created
+2024-07-26 15:03:05,811 - db2Prom.prometheus - INFO - [GAUGE] [oracle_session_count] created
+2024-07-26 15:03:05,811 - db2Prom.prometheus - INFO - [GAUGE] [oracle_tablespace_used_size] created
+2024-07-26 15:03:05,812 - db2Prom.prometheus - INFO - [GAUGE] [oracle_redo_log_used_size] created
+2024-07-26 15:03:05,812 - db2Prom.prometheus - INFO - [GAUGE] [oracle_active_transactions] created
+2024-07-26 15:03:05,813 - root - CRITICAL - Fatal error: name 'DB2Connection' is not defined
+2024-07-26 15:05:15,962 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-26 15:05:15,963 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_count] created
+2024-07-26 15:05:15,963 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_maxwait_seconds] created
+2024-07-26 15:05:15,964 - db2Prom.prometheus - INFO - [GAUGE] [db2_applications_count] created
+2024-07-26 15:05:15,964 - db2Prom.prometheus - INFO - [GAUGE] [db2_log_utilization_percent] created
+2024-07-26 15:05:15,964 - db2Prom.prometheus - INFO - [GAUGE] [db2_active_connections] created
+2024-07-26 15:05:15,964 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_used_size] created
+2024-07-26 15:05:15,965 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_total_size] created
+2024-07-26 15:05:15,965 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_used] created
+2024-07-26 15:05:15,965 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_available] created
+2024-07-26 15:05:15,966 - db2Prom.prometheus - INFO - [GAUGE] [oracle_session_count] created
+2024-07-26 15:05:15,966 - db2Prom.prometheus - INFO - [GAUGE] [oracle_tablespace_used_size] created
+2024-07-26 15:05:15,966 - db2Prom.prometheus - INFO - [GAUGE] [oracle_redo_log_used_size] created
+2024-07-26 15:05:15,967 - db2Prom.prometheus - INFO - [GAUGE] [oracle_active_transactions] created
+2024-07-26 15:05:15,967 - root - CRITICAL - Fatal error: __init__() got an unexpected keyword argument 'db_host'
+2024-07-26 15:07:36,438 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-26 15:07:36,438 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_count] created
+2024-07-26 15:07:36,438 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_maxwait_seconds] created
+2024-07-26 15:07:36,439 - db2Prom.prometheus - INFO - [GAUGE] [db2_applications_count] created
+2024-07-26 15:07:36,439 - db2Prom.prometheus - INFO - [GAUGE] [db2_log_utilization_percent] created
+2024-07-26 15:07:36,440 - db2Prom.prometheus - INFO - [GAUGE] [db2_active_connections] created
+2024-07-26 15:07:36,440 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_used_size] created
+2024-07-26 15:07:36,440 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_total_size] created
+2024-07-26 15:07:36,441 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_used] created
+2024-07-26 15:07:36,441 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_available] created
+2024-07-26 15:07:36,441 - db2Prom.prometheus - INFO - [GAUGE] [oracle_session_count] created
+2024-07-26 15:07:36,441 - db2Prom.prometheus - INFO - [GAUGE] [oracle_tablespace_used_size] created
+2024-07-26 15:07:36,442 - db2Prom.prometheus - INFO - [GAUGE] [oracle_redo_log_used_size] created
+2024-07-26 15:07:36,442 - db2Prom.prometheus - INFO - [GAUGE] [oracle_active_transactions] created
+2024-07-26 15:07:36,443 - root - CRITICAL - Fatal error: a coroutine was expected, got None
+2024-07-26 15:12:30,310 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-26 15:12:30,310 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_count] created
+2024-07-26 15:12:30,311 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_maxwait_seconds] created
+2024-07-26 15:12:30,311 - db2Prom.prometheus - INFO - [GAUGE] [db2_applications_count] created
+2024-07-26 15:12:30,311 - db2Prom.prometheus - INFO - [GAUGE] [db2_log_utilization_percent] created
+2024-07-26 15:12:30,312 - db2Prom.prometheus - INFO - [GAUGE] [db2_active_connections] created
+2024-07-26 15:12:30,312 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_used_size] created
+2024-07-26 15:12:30,312 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_total_size] created
+2024-07-26 15:12:30,313 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_used] created
+2024-07-26 15:12:30,313 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_available] created
+2024-07-26 15:12:30,314 - db2Prom.prometheus - INFO - [GAUGE] [oracle_session_count] created
+2024-07-26 15:12:30,314 - db2Prom.prometheus - INFO - [GAUGE] [oracle_tablespace_used_size] created
+2024-07-26 15:12:30,314 - db2Prom.prometheus - INFO - [GAUGE] [oracle_redo_log_used_size] created
+2024-07-26 15:12:30,315 - db2Prom.prometheus - INFO - [GAUGE] [oracle_active_transactions] created
+2024-07-26 15:12:30,316 - root - CRITICAL - Fatal error: no running event loop
+2024-07-26 15:13:27,795 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-26 15:13:27,796 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_count] created
+2024-07-26 15:13:27,796 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_maxwait_seconds] created
+2024-07-26 15:13:27,796 - db2Prom.prometheus - INFO - [GAUGE] [db2_applications_count] created
+2024-07-26 15:13:27,797 - db2Prom.prometheus - INFO - [GAUGE] [db2_log_utilization_percent] created
+2024-07-26 15:13:27,797 - db2Prom.prometheus - INFO - [GAUGE] [db2_active_connections] created
+2024-07-26 15:13:27,798 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_used_size] created
+2024-07-26 15:13:27,798 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_total_size] created
+2024-07-26 15:13:27,798 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_used] created
+2024-07-26 15:13:27,798 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_available] created
+2024-07-26 15:13:27,799 - db2Prom.prometheus - INFO - [GAUGE] [oracle_session_count] created
+2024-07-26 15:13:27,799 - db2Prom.prometheus - INFO - [GAUGE] [oracle_tablespace_used_size] created
+2024-07-26 15:13:27,799 - db2Prom.prometheus - INFO - [GAUGE] [oracle_redo_log_used_size] created
+2024-07-26 15:13:27,800 - db2Prom.prometheus - INFO - [GAUGE] [oracle_active_transactions] created
+2024-07-26 15:13:27,800 - root - CRITICAL - Fatal error: no running event loop
+2024-07-26 15:14:43,233 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-26 15:14:43,234 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_count] created
+2024-07-26 15:14:43,234 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_maxwait_seconds] created
+2024-07-26 15:14:43,235 - db2Prom.prometheus - INFO - [GAUGE] [db2_applications_count] created
+2024-07-26 15:14:43,235 - db2Prom.prometheus - INFO - [GAUGE] [db2_log_utilization_percent] created
+2024-07-26 15:14:43,235 - db2Prom.prometheus - INFO - [GAUGE] [db2_active_connections] created
+2024-07-26 15:14:43,235 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_used_size] created
+2024-07-26 15:14:43,236 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_total_size] created
+2024-07-26 15:14:43,236 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_used] created
+2024-07-26 15:14:43,236 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_available] created
+2024-07-26 15:14:43,237 - db2Prom.prometheus - INFO - [GAUGE] [oracle_session_count] created
+2024-07-26 15:14:43,237 - db2Prom.prometheus - INFO - [GAUGE] [oracle_tablespace_used_size] created
+2024-07-26 15:14:43,237 - db2Prom.prometheus - INFO - [GAUGE] [oracle_redo_log_used_size] created
+2024-07-26 15:14:43,238 - db2Prom.prometheus - INFO - [GAUGE] [oracle_active_transactions] created
+2024-07-26 15:14:43,239 - root - CRITICAL - Fatal error: no running event loop
+Traceback (most recent call last):
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 271, in <module>
+    tasks.append(asyncio.create_task(main(config_connection, config_queries, exporter, default_time_interval)))
+  File "C:\Users\BarryDesktop\AppData\Local\Programs\Python\Python39\lib\asyncio\tasks.py", line 360, in create_task
+    loop = events.get_running_loop()
+RuntimeError: no running event loop
+2024-07-26 15:17:11,720 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-26 15:17:11,720 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_count] created
+2024-07-26 15:17:11,720 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_maxwait_seconds] created
+2024-07-26 15:17:11,721 - db2Prom.prometheus - INFO - [GAUGE] [db2_applications_count] created
+2024-07-26 15:17:11,721 - db2Prom.prometheus - INFO - [GAUGE] [db2_log_utilization_percent] created
+2024-07-26 15:17:11,722 - db2Prom.prometheus - INFO - [GAUGE] [db2_active_connections] created
+2024-07-26 15:17:11,722 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_used_size] created
+2024-07-26 15:17:11,722 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_total_size] created
+2024-07-26 15:17:11,722 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_used] created
+2024-07-26 15:17:11,723 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_available] created
+2024-07-26 15:17:11,723 - db2Prom.prometheus - INFO - [GAUGE] [oracle_session_count] created
+2024-07-26 15:17:11,723 - db2Prom.prometheus - INFO - [GAUGE] [oracle_tablespace_used_size] created
+2024-07-26 15:17:11,723 - db2Prom.prometheus - INFO - [GAUGE] [oracle_redo_log_used_size] created
+2024-07-26 15:17:11,724 - db2Prom.prometheus - INFO - [GAUGE] [oracle_active_transactions] created
+2024-07-26 15:17:11,725 - root - INFO - Starting connection keeper with retry interval 60 seconds.
+2024-07-26 15:17:12,787 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 15:17:12,788 - root - INFO - Starting query set for: Lockwaits with interval 10 seconds.
+2024-07-26 15:17:12,788 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 15:17:12,789 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 15:17:13,019 - root - ERROR - Error executing query Lockwaits: name 're' is not defined
+Traceback (most recent call last):
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in query_set
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in <genexpr>
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+NameError: name 're' is not defined
+2024-07-26 15:17:13,021 - root - INFO - Starting query set for: Applications count with interval 15 seconds.
+2024-07-26 15:17:13,021 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 15:17:13,023 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 15:17:13,047 - db2Prom.db2 - WARNING - [192.168.50.253:50000/sample] [Applications count] failed to execute
+2024-07-26 15:17:13,049 - root - ERROR - Error executing query Applications count: name 're' is not defined
+Traceback (most recent call last):
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in query_set
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in <genexpr>
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+NameError: name 're' is not defined
+2024-07-26 15:17:13,050 - root - INFO - Starting query set for: Log Utilization with interval 15 seconds.
+2024-07-26 15:17:13,050 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 15:17:13,052 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 15:17:13,085 - root - INFO - Starting query set for: Active Connections with interval 30 seconds.
+2024-07-26 15:17:13,086 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 15:17:13,088 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 15:17:13,110 - root - INFO - Starting query set for: Tablespace Utilization with interval 60 seconds.
+2024-07-26 15:17:13,110 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 15:17:13,112 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 15:17:13,152 - root - ERROR - Error executing query Tablespace Utilization: name 're' is not defined
+Traceback (most recent call last):
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in query_set
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in <genexpr>
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+NameError: name 're' is not defined
+2024-07-26 15:17:13,153 - root - INFO - Starting query set for: Transaction Log Usage with interval 30 seconds.
+2024-07-26 15:17:13,154 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 15:17:13,155 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 15:17:13,176 - root - INFO - Starting connection keeper with retry interval 60 seconds.
+2024-07-26 15:17:13,205 - db2Prom.ora - ERROR - [192.168.50.72:1521/XE] DPY-6005: cannot connect to database (CONNECTION_ID=GxGaVH4cJAalz7c51xbaMw==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-26 15:17:13,206 - root - INFO - Starting query set for: Oracle Sessions with interval 15 seconds.
+2024-07-26 15:17:13,251 - db2Prom.ora - ERROR - [192.168.50.72:1521/XE] DPY-6005: cannot connect to database (CONNECTION_ID=zzrGOLZKLenKIFRvdHh5RQ==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-26 15:17:13,252 - root - ERROR - Error executing query Oracle Sessions: name 're' is not defined
+Traceback (most recent call last):
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in query_set
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in <genexpr>
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+NameError: name 're' is not defined
+2024-07-26 15:17:13,253 - root - INFO - Starting query set for: Oracle Tablespace Usage with interval 30 seconds.
+2024-07-26 15:17:13,299 - db2Prom.ora - ERROR - [192.168.50.72:1521/XE] DPY-6005: cannot connect to database (CONNECTION_ID=kb6SvB7Idbqtreu+smln5A==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-26 15:17:13,300 - root - ERROR - Error executing query Oracle Tablespace Usage: name 're' is not defined
+Traceback (most recent call last):
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in query_set
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in <genexpr>
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+NameError: name 're' is not defined
+2024-07-26 15:17:13,300 - root - INFO - Starting query set for: Oracle Redo Log Usage with interval 30 seconds.
+2024-07-26 15:17:13,324 - db2Prom.ora - ERROR - [192.168.50.72:1521/XE] DPY-6005: cannot connect to database (CONNECTION_ID=Z7KUVqFhQsxAxMcBvNHg7Q==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-26 15:17:13,325 - root - INFO - Starting query set for: Oracle Active Transactions with interval 30 seconds.
+2024-07-26 15:17:13,348 - db2Prom.ora - ERROR - [192.168.50.72:1521/XE] DPY-6005: cannot connect to database (CONNECTION_ID=xGKRX112Je8jfuXYC3CY7w==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-26 15:17:23,027 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 15:17:23,028 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 15:17:23,031 - root - ERROR - Error executing query Lockwaits: name 're' is not defined
+Traceback (most recent call last):
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in query_set
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in <genexpr>
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+NameError: name 're' is not defined
+2024-07-26 15:17:28,061 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 15:17:28,063 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 15:17:28,066 - db2Prom.db2 - WARNING - [192.168.50.253:50000/sample] [Applications count] failed to execute
+2024-07-26 15:17:28,067 - root - ERROR - Error executing query Applications count: name 're' is not defined
+Traceback (most recent call last):
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in query_set
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in <genexpr>
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+NameError: name 're' is not defined
+2024-07-26 15:17:28,093 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 15:17:28,095 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 15:17:28,293 - db2Prom.ora - ERROR - [192.168.50.72:1521/XE] DPY-6005: cannot connect to database (CONNECTION_ID=iV3BefCWy0tL62ti1Nusmg==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-26 15:17:28,293 - root - ERROR - Error executing query Oracle Sessions: name 're' is not defined
+Traceback (most recent call last):
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in query_set
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+  File "D:\Learning\Code\Python\db2Prom\attemptOra.py", line 119, in <genexpr>
+    has_special_labels = any(re.match(r'^\$\d+$', v) for v in g_labels.values())
+NameError: name 're' is not defined

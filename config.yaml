@@ -1,0 +1,40 @@
+global_config:
+  log_level: INFO
+  retry_conn_interval: 60
+  default_time_interval: 15
+  log_path: "logs/"
+  port: 9844
+
+queries:
+  - name: "Locations"
+    runs_on: ["production"]
+    time_interval: 10
+    query: |
+      select
+        count(*) 
+      from countries
+    gauges:
+      - name: "location_Count"
+        desc: "Count of locations"
+        col: 1
+
+connections:
+  - db_host: "192.168.50.72"
+    db_name: "FREEPDB1"
+    db_port: 1521
+    db_user: "my_user"
+    db_passwd: "password"
+    tags: [production, proddb1]
+    extra_labels:
+      dbinstance: HR
+      dbenv: production
+
+  - db_host: "192.168.50.72"
+    db_name: "FREEPDB1"
+    db_port: 1521
+    db_user: "my_user"
+    db_passwd: "password"
+    tags: [production, proddb2]
+    extra_labels:
+      dbinstance: HR
+      dbenv: production222

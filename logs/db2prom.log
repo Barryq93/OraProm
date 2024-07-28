@@ -1,0 +1,299 @@
+2024-07-25 23:09:23,216 - root - INFO - Configuration file loaded successfully.
+2024-07-25 23:09:23,216 - root - INFO - Max connection labels: {'dbname', 'dbinstance', 'dbhost', 'dbport', 'dbenv'}
+2024-07-25 23:09:23,217 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-25 23:09:23,217 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_count] created
+2024-07-25 23:09:23,217 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_maxwait_seconds] created
+2024-07-25 23:09:23,218 - db2Prom.prometheus - INFO - [GAUGE] [db2_applications_count] created
+2024-07-25 23:09:23,218 - db2Prom.prometheus - INFO - [GAUGE] [db2_log_utilization_percent] created
+2024-07-25 23:09:23,218 - db2Prom.prometheus - INFO - [GAUGE] [db2_active_connections] created
+2024-07-25 23:09:23,219 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_used_size] created
+2024-07-25 23:09:23,219 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_total_size] created
+2024-07-25 23:09:23,220 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_used] created
+2024-07-25 23:09:23,220 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_available] created
+2024-07-25 23:09:24,073 - db2Prom.prometheus - INFO - Db2Prom server started at port 9844
+2024-07-25 23:09:24,074 - root - INFO - Setting up DB2 connection with provided configuration.
+2024-07-25 23:09:24,075 - root - INFO - Starting DB2 connection keeper with retry interval 60 seconds.
+2024-07-25 23:09:26,042 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-25 23:09:26,042 - root - INFO - Starting query set for: Lockwaits with interval 10 seconds.
+2024-07-25 23:09:26,043 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-25 23:09:26,046 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-25 23:09:26,385 - root - INFO - Starting query set for: Applications count with interval 15 seconds.
+2024-07-25 23:09:26,386 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-25 23:09:26,387 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-25 23:09:26,435 - db2Prom.db2 - WARNING - [192.168.50.253:50000/sample] [Applications count] failed to execute
+2024-07-25 23:09:26,436 - root - INFO - Starting query set for: Log Utilization with interval 15 seconds.
+2024-07-25 23:09:26,437 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-25 23:09:26,438 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-25 23:09:26,788 - root - INFO - Starting query set for: Active Connections with interval 30 seconds.
+2024-07-25 23:09:26,789 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-25 23:09:26,790 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-25 23:09:26,817 - root - INFO - Starting query set for: Tablespace Utilization with interval 60 seconds.
+2024-07-25 23:09:26,818 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-25 23:09:26,820 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-25 23:09:26,877 - root - INFO - Starting query set for: Transaction Log Usage with interval 30 seconds.
+2024-07-25 23:09:26,877 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-25 23:09:26,879 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-25 23:09:36,398 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-25 23:09:36,399 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-25 23:09:41,455 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-25 23:09:41,518 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-25 23:09:41,523 - db2Prom.db2 - WARNING - [192.168.50.253:50000/sample] [Applications count] failed to execute
+2024-07-25 23:09:41,807 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-25 23:09:41,808 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-25 23:09:46,419 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-25 23:09:46,421 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-25 23:09:51,717 - root - INFO - Received termination signal, shutting down gracefully.
+2024-07-26 10:01:20,367 - root - INFO - Configuration file loaded successfully.
+2024-07-26 10:01:20,369 - root - INFO - Max connection labels: {'dbhost', 'dbname', 'dbport', 'dbenv', 'dbinstance'}
+2024-07-26 10:01:20,369 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-26 10:01:20,369 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_count] created
+2024-07-26 10:01:20,370 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_maxwait_seconds] created
+2024-07-26 10:01:20,370 - db2Prom.prometheus - INFO - [GAUGE] [db2_applications_count] created
+2024-07-26 10:01:20,370 - db2Prom.prometheus - INFO - [GAUGE] [db2_log_utilization_percent] created
+2024-07-26 10:01:20,370 - db2Prom.prometheus - INFO - [GAUGE] [db2_active_connections] created
+2024-07-26 10:01:20,371 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_used_size] created
+2024-07-26 10:01:20,371 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_total_size] created
+2024-07-26 10:01:20,372 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_used] created
+2024-07-26 10:01:20,372 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_available] created
+2024-07-26 10:01:21,215 - db2Prom.prometheus - INFO - Db2Prom server started at port 9844
+2024-07-26 10:01:21,217 - root - INFO - Setting up DB2 connection with provided configuration.
+2024-07-26 10:01:21,217 - root - INFO - Starting DB2 connection keeper with retry interval 60 seconds.
+2024-07-26 10:01:22,564 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 10:01:22,565 - root - INFO - Starting query set for: Lockwaits with interval 10 seconds.
+2024-07-26 10:01:22,565 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 10:01:22,569 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 10:01:22,843 - root - INFO - Starting query set for: Applications count with interval 15 seconds.
+2024-07-26 10:01:22,844 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 10:01:22,845 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 10:01:22,882 - db2Prom.db2 - WARNING - [192.168.50.253:50000/sample] [Applications count] failed to execute
+2024-07-26 10:01:22,884 - root - INFO - Starting query set for: Log Utilization with interval 15 seconds.
+2024-07-26 10:01:22,884 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 10:01:22,886 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 10:01:23,164 - root - INFO - Starting query set for: Active Connections with interval 30 seconds.
+2024-07-26 10:01:23,165 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 10:01:23,166 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 10:01:23,188 - root - INFO - Starting query set for: Tablespace Utilization with interval 60 seconds.
+2024-07-26 10:01:23,189 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 10:01:23,190 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 10:01:23,238 - root - INFO - Starting query set for: Transaction Log Usage with interval 30 seconds.
+2024-07-26 10:01:23,239 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 10:01:23,241 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 10:01:27,732 - root - INFO - Received termination signal, shutting down gracefully.
+2024-07-26 11:32:36,461 - root - INFO - Configuration file loaded successfully.
+2024-07-26 11:32:36,461 - root - INFO - Max connection labels: {'dbport', 'dbenv', 'dbhost', 'dbname', 'dbinstance'}
+2024-07-26 11:32:36,461 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-26 11:32:36,462 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_count] created
+2024-07-26 11:32:36,462 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_maxwait_seconds] created
+2024-07-26 11:32:36,463 - db2Prom.prometheus - INFO - [GAUGE] [db2_applications_count] created
+2024-07-26 11:32:36,463 - db2Prom.prometheus - INFO - [GAUGE] [db2_log_utilization_percent] created
+2024-07-26 11:32:36,463 - db2Prom.prometheus - INFO - [GAUGE] [db2_active_connections] created
+2024-07-26 11:32:36,464 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_used_size] created
+2024-07-26 11:32:36,464 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_total_size] created
+2024-07-26 11:32:36,465 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_used] created
+2024-07-26 11:32:36,465 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_available] created
+2024-07-26 11:32:37,327 - db2Prom.prometheus - INFO - Db2Prom server started at port 9844
+2024-07-26 11:32:37,328 - root - INFO - Setting up DB2 connection with provided configuration.
+2024-07-26 11:32:37,328 - root - INFO - Starting DB2 connection keeper with retry interval 60 seconds.
+2024-07-26 11:32:38,352 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 11:32:38,352 - root - INFO - Starting query set for: Lockwaits with interval 10 seconds.
+2024-07-26 11:32:38,353 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 11:32:38,354 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 11:32:38,594 - root - INFO - Starting query set for: Applications count with interval 15 seconds.
+2024-07-26 11:32:38,594 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 11:32:38,595 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 11:32:38,615 - db2Prom.db2 - WARNING - [192.168.50.253:50000/sample] [Applications count] failed to execute
+2024-07-26 11:32:38,617 - root - INFO - Starting query set for: Log Utilization with interval 15 seconds.
+2024-07-26 11:32:38,617 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 11:32:38,619 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 11:32:38,645 - root - INFO - Starting query set for: Active Connections with interval 30 seconds.
+2024-07-26 11:32:38,645 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 11:32:38,647 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 11:32:38,669 - root - INFO - Starting query set for: Tablespace Utilization with interval 60 seconds.
+2024-07-26 11:32:38,669 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 11:32:38,671 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 11:32:38,714 - root - INFO - Starting query set for: Transaction Log Usage with interval 30 seconds.
+2024-07-26 11:32:38,714 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 11:32:38,716 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 11:32:41,584 - root - INFO - Received termination signal, shutting down gracefully.
+2024-07-26 15:25:06,990 - root - INFO - Configuration file loaded successfully.
+2024-07-26 15:25:06,990 - root - INFO - Max connection labels: {'dbname', 'dbport', 'dbhost', 'dbenv', 'dbinstance'}
+2024-07-26 15:25:06,990 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-26 15:25:06,991 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_count] created
+2024-07-26 15:25:06,991 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_maxwait_seconds] created
+2024-07-26 15:25:06,991 - db2Prom.prometheus - INFO - [GAUGE] [db2_applications_count] created
+2024-07-26 15:25:06,992 - db2Prom.prometheus - INFO - [GAUGE] [db2_log_utilization_percent] created
+2024-07-26 15:25:06,992 - db2Prom.prometheus - INFO - [GAUGE] [db2_active_connections] created
+2024-07-26 15:25:06,992 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_used_size] created
+2024-07-26 15:25:06,992 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_total_size] created
+2024-07-26 15:25:06,993 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_used] created
+2024-07-26 15:25:06,993 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_available] created
+2024-07-26 15:25:07,840 - db2Prom.prometheus - INFO - Db2Prom server started at port 9844
+2024-07-26 15:25:07,841 - root - INFO - Setting up DB2 connection with provided configuration.
+2024-07-26 15:25:07,841 - root - INFO - Starting DB2 connection keeper with retry interval 60 seconds.
+2024-07-26 15:25:08,886 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 15:25:08,887 - root - INFO - Starting query set for: Lockwaits with interval 10 seconds.
+2024-07-26 15:25:08,887 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 15:25:08,888 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 15:25:09,122 - root - INFO - Starting query set for: Applications count with interval 15 seconds.
+2024-07-26 15:25:09,122 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 15:25:09,124 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 15:25:09,147 - db2Prom.db2 - WARNING - [192.168.50.253:50000/sample] [Applications count] failed to execute
+2024-07-26 15:25:09,149 - root - INFO - Starting query set for: Log Utilization with interval 15 seconds.
+2024-07-26 15:25:09,150 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 15:25:09,151 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 15:25:09,184 - root - INFO - Starting query set for: Active Connections with interval 30 seconds.
+2024-07-26 15:25:09,185 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 15:25:09,186 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 15:25:09,205 - root - INFO - Starting query set for: Tablespace Utilization with interval 60 seconds.
+2024-07-26 15:25:09,206 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 15:25:09,207 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 15:25:09,246 - root - INFO - Starting query set for: Transaction Log Usage with interval 30 seconds.
+2024-07-26 15:25:09,246 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 15:25:09,248 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 15:25:19,146 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 15:25:19,147 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 15:25:19,988 - root - INFO - Received termination signal, shutting down gracefully.
+2024-07-26 15:45:44,049 - root - INFO - Configuration file loaded successfully.
+2024-07-26 15:45:44,049 - root - INFO - Max connection labels: {'dbenv', 'dbport', 'dbinstance', 'dbname', 'dbhost'}
+2024-07-26 15:45:44,049 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-26 15:45:44,050 - oraProm.prometheus - INFO - [GAUGE] [location_Count] created
+2024-07-26 15:45:44,884 - oraProm.prometheus - INFO - Db2Prom server started at port 9844
+2024-07-26 15:45:44,885 - root - INFO - Setting up Oracle connection with provided configuration.
+2024-07-26 15:45:44,886 - root - INFO - Starting Oracle connection keeper with retry interval 60 seconds.
+2024-07-26 15:45:44,891 - oraProm.ora - ERROR - [192.168.50.72:1521/EX] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=eRmj2xF+FBMPnT0uB6zahw==).
+DPY-6001: Service "EX" is not registered with the listener at host "192.168.50.72" port 1521. (Similar to ORA-12514)
+2024-07-26 15:45:44,892 - root - INFO - Starting query set for: Locations with interval 10 seconds.
+2024-07-26 15:45:44,894 - oraProm.ora - ERROR - [192.168.50.72:1521/EX] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=I+JzwDotZ8Ru/1l4hHFQSQ==).
+DPY-6001: Service "EX" is not registered with the listener at host "192.168.50.72" port 1521. (Similar to ORA-12514)
+2024-07-26 15:45:44,894 - oraProm.ora - WARNING - [192.168.50.72:1521/EX] No active connection to execute query: [Locations]
+2024-07-26 15:45:54,898 - oraProm.ora - ERROR - [192.168.50.72:1521/EX] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=LqM0jWD8wLbaOKE3NzkT8Q==).
+DPY-6001: Service "EX" is not registered with the listener at host "192.168.50.72" port 1521. (Similar to ORA-12514)
+2024-07-26 15:45:54,948 - oraProm.ora - WARNING - [192.168.50.72:1521/EX] No active connection to execute query: [Locations]
+2024-07-26 15:46:04,967 - oraProm.ora - ERROR - [192.168.50.72:1521/EX] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=mt063jUvbOvRfAEL2G6/Kw==).
+DPY-6001: Service "EX" is not registered with the listener at host "192.168.50.72" port 1521. (Similar to ORA-12514)
+2024-07-26 15:46:04,968 - oraProm.ora - WARNING - [192.168.50.72:1521/EX] No active connection to execute query: [Locations]
+2024-07-26 15:46:13,466 - root - INFO - Received termination signal, shutting down gracefully.
+2024-07-26 15:50:10,619 - root - INFO - Configuration file loaded successfully.
+2024-07-26 15:50:10,620 - root - INFO - Max connection labels: {'dbenv', 'dbport', 'dbhost', 'dbinstance', 'dbname'}
+2024-07-26 15:50:10,620 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-26 15:50:10,620 - oraProm.prometheus - INFO - [GAUGE] [location_Count] created
+2024-07-26 15:50:11,466 - oraProm.prometheus - INFO - Db2Prom server started at port 9844
+2024-07-26 15:50:11,468 - root - INFO - Setting up Oracle connection with provided configuration.
+2024-07-26 15:50:11,468 - root - INFO - Starting Oracle connection keeper with retry interval 60 seconds.
+2024-07-26 15:50:11,493 - oraProm.ora - ERROR - [192.168.50.72:1521/XE] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=npaRXuHNVjifD/GpNOsivg==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-26 15:50:11,494 - root - INFO - Starting query set for: Locations with interval 10 seconds.
+2024-07-26 15:50:11,518 - oraProm.ora - ERROR - [192.168.50.72:1521/XE] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=vC808Rzxiow63Y2tdxOEQw==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-26 15:50:11,519 - oraProm.ora - WARNING - [192.168.50.72:1521/XE] No active connection to execute query: [Locations]
+2024-07-26 15:50:21,567 - oraProm.ora - ERROR - [192.168.50.72:1521/XE] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=rCEVMWoQJlan/kPXhyB3bg==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-26 15:50:21,568 - oraProm.ora - WARNING - [192.168.50.72:1521/XE] No active connection to execute query: [Locations]
+2024-07-26 15:50:31,594 - oraProm.ora - ERROR - [192.168.50.72:1521/XE] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=cp/0/AN65jW2my5He5th/g==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-26 15:50:31,595 - oraProm.ora - WARNING - [192.168.50.72:1521/XE] No active connection to execute query: [Locations]
+2024-07-26 15:50:33,411 - root - INFO - Received termination signal, shutting down gracefully.
+2024-07-28 21:59:34,747 - root - INFO - Configuration file loaded successfully.
+2024-07-28 21:59:34,747 - root - INFO - Max connection labels: {'dbhost', 'dbname', 'dbenv', 'dbinstance', 'dbport'}
+2024-07-28 21:59:34,747 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-28 21:59:34,748 - oraProm.prometheus - INFO - [GAUGE] [location_Count] created
+2024-07-28 21:59:35,598 - oraProm.prometheus - INFO - Db2Prom server started at port 9844
+2024-07-28 21:59:35,599 - root - INFO - Setting up Oracle connection with provided configuration.
+2024-07-28 21:59:35,600 - root - INFO - Starting Oracle connection keeper with retry interval 60 seconds.
+2024-07-28 21:59:35,610 - oraProm.ora - ERROR - [192.168.50.72:1521/XE] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=S1zC8SZqHJ1Q3XC000+izQ==).
+DPY-6001: Service "XE" is not registered with the listener at host "192.168.50.72" port 1521. (Similar to ORA-12514)
+2024-07-28 21:59:35,610 - root - INFO - Starting query set for: Locations with interval 10 seconds.
+2024-07-28 21:59:35,631 - oraProm.ora - ERROR - [192.168.50.72:1521/XE] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=DBzTW3V+7RPMDTRlRaEj8Q==).
+DPY-6001: Service "XE" is not registered with the listener at host "192.168.50.72" port 1521. (Similar to ORA-12514)
+2024-07-28 21:59:35,632 - oraProm.ora - WARNING - [192.168.50.72:1521/XE] No active connection to execute query: [Locations]
+2024-07-28 21:59:38,432 - root - INFO - Received termination signal, shutting down gracefully.
+2024-07-28 21:59:58,557 - root - INFO - Configuration file loaded successfully.
+2024-07-28 21:59:58,558 - root - INFO - Max connection labels: {'dbport', 'dbname', 'dbhost', 'dbenv', 'dbinstance'}
+2024-07-28 21:59:58,558 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-28 21:59:58,558 - oraProm.prometheus - INFO - [GAUGE] [location_Count] created
+2024-07-28 21:59:59,406 - oraProm.prometheus - INFO - Db2Prom server started at port 9844
+2024-07-28 21:59:59,407 - root - INFO - Setting up Oracle connection with provided configuration.
+2024-07-28 21:59:59,408 - root - INFO - Starting Oracle connection keeper with retry interval 60 seconds.
+2024-07-28 21:59:59,506 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 21:59:59,506 - root - INFO - Starting query set for: Locations with interval 10 seconds.
+2024-07-28 21:59:59,510 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 21:59:59,586 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:00:09,605 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:00:09,681 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:00:19,693 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:00:19,770 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:00:29,779 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:00:29,856 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:00:39,869 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:00:39,944 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:00:49,950 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:00:50,038 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:00:53,309 - root - INFO - Received termination signal, shutting down gracefully.
+2024-07-28 22:09:00,315 - root - INFO - Configuration file loaded successfully.
+2024-07-28 22:09:00,316 - root - INFO - Max connection labels: {'dbname', 'dbport', 'dbenv', 'dbinstance', 'dbhost'}
+2024-07-28 22:09:00,316 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-28 22:09:00,316 - oraProm.prometheus - INFO - [GAUGE] [location_Count] created
+2024-07-28 22:09:01,159 - oraProm.prometheus - INFO - Db2Prom server started at port 9844
+2024-07-28 22:09:01,160 - root - INFO - Setting up Oracle connection with provided configuration.
+2024-07-28 22:09:01,161 - root - INFO - Setting up Oracle connection with provided configuration.
+2024-07-28 22:09:01,161 - root - INFO - Starting Oracle connection keeper with retry interval 60 seconds.
+2024-07-28 22:09:01,261 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:09:01,305 - root - INFO - Starting query set for: Locations with interval 10 seconds.
+2024-07-28 22:09:01,308 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:09:01,386 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:09:01,389 - root - INFO - Starting Oracle connection keeper with retry interval 60 seconds.
+2024-07-28 22:09:01,465 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:09:01,466 - root - INFO - Starting query set for: Locations with interval 10 seconds.
+2024-07-28 22:09:01,469 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:09:01,544 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:09:11,398 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:09:11,473 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:09:11,571 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:09:11,657 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:09:21,516 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:09:21,592 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:09:21,674 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:09:21,749 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:09:31,613 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:09:31,689 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:09:31,773 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:09:31,849 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:09:32,860 - root - INFO - Received termination signal, shutting down gracefully.
+2024-07-28 22:09:34,939 - root - INFO - Configuration file loaded successfully.
+2024-07-28 22:09:34,939 - root - INFO - Max connection labels: {'dbport', 'dbhost', 'dbinstance', 'dbname', 'dbenv'}
+2024-07-28 22:09:34,939 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-28 22:09:34,940 - oraProm.prometheus - INFO - [GAUGE] [location_Count] created
+2024-07-28 22:09:35,796 - oraProm.prometheus - INFO - Db2Prom server started at port 9844
+2024-07-28 22:09:35,797 - root - INFO - Setting up Oracle connection with provided configuration.
+2024-07-28 22:09:35,797 - root - INFO - Setting up Oracle connection with provided configuration.
+2024-07-28 22:09:35,798 - root - INFO - Starting Oracle connection keeper with retry interval 60 seconds.
+2024-07-28 22:09:35,893 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:09:35,894 - root - INFO - Starting query set for: Locations with interval 10 seconds.
+2024-07-28 22:09:35,897 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:09:35,981 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:09:35,984 - root - INFO - Starting Oracle connection keeper with retry interval 60 seconds.
+2024-07-28 22:09:36,060 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:09:36,061 - root - INFO - Starting query set for: Locations with interval 10 seconds.
+2024-07-28 22:09:36,063 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:09:36,138 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:09:46,001 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:09:46,077 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:09:46,160 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:09:46,235 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:09:56,098 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:09:56,173 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:09:56,242 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:09:56,329 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:10:06,187 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:10:06,273 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:10:06,345 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:10:06,420 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:10:16,284 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:10:16,359 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:10:16,442 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] closed
+2024-07-28 22:10:16,529 - oraProm.ora - INFO - [192.168.50.72:1521/FREEPDB1] connected
+2024-07-28 22:10:19,324 - root - INFO - Received termination signal, shutting down gracefully.

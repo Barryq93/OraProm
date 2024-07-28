@@ -1,0 +1,24 @@
+2024-07-26 15:45:44,891 - oraProm.ora - ERROR - [192.168.50.72:1521/EX] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=eRmj2xF+FBMPnT0uB6zahw==).
+DPY-6001: Service "EX" is not registered with the listener at host "192.168.50.72" port 1521. (Similar to ORA-12514)
+2024-07-26 15:45:44,894 - oraProm.ora - ERROR - [192.168.50.72:1521/EX] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=I+JzwDotZ8Ru/1l4hHFQSQ==).
+DPY-6001: Service "EX" is not registered with the listener at host "192.168.50.72" port 1521. (Similar to ORA-12514)
+2024-07-26 15:45:54,898 - oraProm.ora - ERROR - [192.168.50.72:1521/EX] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=LqM0jWD8wLbaOKE3NzkT8Q==).
+DPY-6001: Service "EX" is not registered with the listener at host "192.168.50.72" port 1521. (Similar to ORA-12514)
+2024-07-26 15:46:04,967 - oraProm.ora - ERROR - [192.168.50.72:1521/EX] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=mt063jUvbOvRfAEL2G6/Kw==).
+DPY-6001: Service "EX" is not registered with the listener at host "192.168.50.72" port 1521. (Similar to ORA-12514)
+2024-07-26 15:50:11,493 - oraProm.ora - ERROR - [192.168.50.72:1521/XE] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=npaRXuHNVjifD/GpNOsivg==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-26 15:50:11,518 - oraProm.ora - ERROR - [192.168.50.72:1521/XE] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=vC808Rzxiow63Y2tdxOEQw==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-26 15:50:21,567 - oraProm.ora - ERROR - [192.168.50.72:1521/XE] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=rCEVMWoQJlan/kPXhyB3bg==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-26 15:50:31,594 - oraProm.ora - ERROR - [192.168.50.72:1521/XE] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=cp/0/AN65jW2my5He5th/g==).
+DPY-3010: connections to this database server version are not supported by python-oracledb in thin mode
+Help: https://python-oracledb.readthedocs.io/en/latest/user_guide/troubleshooting.html#dpy-3010
+2024-07-28 21:59:35,610 - oraProm.ora - ERROR - [192.168.50.72:1521/XE] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=S1zC8SZqHJ1Q3XC000+izQ==).
+DPY-6001: Service "XE" is not registered with the listener at host "192.168.50.72" port 1521. (Similar to ORA-12514)
+2024-07-28 21:59:35,631 - oraProm.ora - ERROR - [192.168.50.72:1521/XE] Oracle Database error: DPY-6005: cannot connect to database (CONNECTION_ID=DBzTW3V+7RPMDTRlRaEj8Q==).
+DPY-6001: Service "XE" is not registered with the listener at host "192.168.50.72" port 1521. (Similar to ORA-12514)

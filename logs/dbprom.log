@@ -1,0 +1,55 @@
+2024-07-26 11:13:14,150 - root - INFO - Configuration file loaded successfully.
+2024-07-26 11:13:14,151 - root - INFO - Max connection labels: {'dbhost', 'dbenv', 'dbinstance', 'dbport', 'dbname'}
+2024-07-26 11:13:14,151 - root - INFO - Starting Prometheus exporter on port 9844 and initializing metrics.
+2024-07-26 11:13:14,152 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_count] created
+2024-07-26 11:13:14,152 - db2Prom.prometheus - INFO - [GAUGE] [db2_lockwaits_maxwait_seconds] created
+2024-07-26 11:13:14,152 - db2Prom.prometheus - INFO - [GAUGE] [db2_applications_count] created
+2024-07-26 11:13:14,152 - db2Prom.prometheus - INFO - [GAUGE] [db2_log_utilization_percent] created
+2024-07-26 11:13:14,153 - db2Prom.prometheus - INFO - [GAUGE] [db2_active_connections] created
+2024-07-26 11:13:14,172 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_used_size] created
+2024-07-26 11:13:14,173 - db2Prom.prometheus - INFO - [GAUGE] [db2_tablespace_total_size] created
+2024-07-26 11:13:14,173 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_used] created
+2024-07-26 11:13:14,174 - db2Prom.prometheus - INFO - [GAUGE] [db2_total_log_available] created
+2024-07-26 11:13:14,174 - db2Prom.prometheus - INFO - [GAUGE] [oracle_session_count] created
+2024-07-26 11:13:14,174 - db2Prom.prometheus - INFO - [GAUGE] [oracle_tablespace_used_size] created
+2024-07-26 11:13:14,175 - db2Prom.prometheus - INFO - [GAUGE] [oracle_redo_log_used_size] created
+2024-07-26 11:13:14,175 - db2Prom.prometheus - INFO - [GAUGE] [oracle_active_transactions] created
+2024-07-26 11:13:15,029 - db2Prom.prometheus - INFO - Db2Prom server started at port 9844
+2024-07-26 11:13:15,030 - root - INFO - Starting connection keeper with retry interval 60 seconds.
+2024-07-26 11:13:16,292 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 11:13:16,292 - root - INFO - Starting query set for: Lockwaits with interval 10 seconds.
+2024-07-26 11:13:16,293 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 11:13:16,294 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 11:13:16,529 - root - INFO - Starting query set for: Applications count with interval 15 seconds.
+2024-07-26 11:13:16,529 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 11:13:16,531 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 11:13:16,554 - db2Prom.db2 - WARNING - [192.168.50.253:50000/sample] [Applications count] failed to execute
+2024-07-26 11:13:16,556 - root - INFO - Starting query set for: Log Utilization with interval 15 seconds.
+2024-07-26 11:13:16,556 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 11:13:16,557 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 11:13:16,590 - root - INFO - Starting query set for: Active Connections with interval 30 seconds.
+2024-07-26 11:13:16,590 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 11:13:16,592 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 11:13:16,613 - root - INFO - Starting query set for: Tablespace Utilization with interval 60 seconds.
+2024-07-26 11:13:16,614 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 11:13:16,615 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 11:13:16,658 - root - INFO - Starting query set for: Transaction Log Usage with interval 30 seconds.
+2024-07-26 11:13:16,658 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 11:13:16,660 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 11:13:16,682 - root - INFO - Starting query set for: Oracle Sessions with interval 15 seconds.
+2024-07-26 11:13:16,682 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 11:13:16,684 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 11:13:16,696 - db2Prom.db2 - WARNING - [192.168.50.253:50000/sample] [Oracle Sessions] failed to execute
+2024-07-26 11:13:16,696 - root - INFO - Starting query set for: Oracle Tablespace Usage with interval 30 seconds.
+2024-07-26 11:13:16,697 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 11:13:16,698 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 11:13:16,702 - db2Prom.db2 - WARNING - [192.168.50.253:50000/sample] [Oracle Tablespace Usage] failed to execute
+2024-07-26 11:13:16,703 - root - INFO - Starting query set for: Oracle Redo Log Usage with interval 30 seconds.
+2024-07-26 11:13:16,703 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 11:13:16,705 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 11:13:16,709 - db2Prom.db2 - WARNING - [192.168.50.253:50000/sample] [Oracle Redo Log Usage] failed to execute
+2024-07-26 11:13:16,709 - root - INFO - Starting query set for: Oracle Active Transactions with interval 30 seconds.
+2024-07-26 11:13:16,709 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] closed
+2024-07-26 11:13:16,711 - db2Prom.db2 - INFO - [192.168.50.253:50000/sample] connected
+2024-07-26 11:13:16,715 - db2Prom.db2 - WARNING - [192.168.50.253:50000/sample] [Oracle Active Transactions] failed to execute
+2024-07-26 11:13:16,715 - root - CRITICAL - Error loading configuration: OracleConnection() takes no arguments. Check configuration.
