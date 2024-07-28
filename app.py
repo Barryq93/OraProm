@@ -15,7 +15,7 @@ def setup_logging(log_path, log_level):
     logger = logging.getLogger()
     logger.setLevel(log_level)
 
-    log_file = os.path.join(log_path, "db2prom.log")
+    log_file = os.path.join(log_path, "oraProm.log")
     handler = RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     handler.setFormatter(formatter)

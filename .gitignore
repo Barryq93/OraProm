@@ -1,0 +1,11 @@
+.env*
+.venv
+
+*.yaml
+!config.example.yaml
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+logs
