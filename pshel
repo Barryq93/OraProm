@@ -1,12 +1,8 @@
 # Program 1 - Directory Check
 
-# Import the YAML module for parsing the configuration file
 Import-Module powershell-yaml
-
-# Read the configuration file
 $config = Get-Content -Path "config.yml" | ConvertFrom-Yaml
 
-# Global variables
 $globalThresholdMet = $false
 $emailBody = ""
 
@@ -24,28 +20,8 @@ function Check-FileCount {
     foreach ($threshold in $countThresholds) {
         if ($fileCount -ge $threshold.count) {
             $breachedThresholds += $threshold
-            if ($threshold.count -ge 3) {
-                $script:globalThresholdMet = $true
-                $script:emailBody += "Threshold of 3 or more met in $path`n"
-            }
-            if ($threshold.count -ge 2) {
-                Write-Output "Major error: Threshold of 2 or more met in $path"
-            }
+            CheckSeverityThresholds -severity $threshold.severity -path $path -details "File count: $fileCount"
         }
-    }
-
-    if ($breachedThresholds.Count -gt 0) {
-        $highestSeverity = ($breachedThresholds | Sort-Object severity | Select-Object -First 1).severity
-        $highestCount = ($breachedThresholds | Sort-Object count -Descending | Select-Object -First 1).count
-        
-        Write-Output "Directory: $path (Filter: $fileFilter)"
-        Write-Output "  Total files: $fileCount"
-        Write-Output "  Highest Count Severity: $highestSeverity (Threshold: $highestCount files)"
-        
-        $breachedThresholds | ForEach-Object {
-            Write-Output "  Breached: $($_.count) files (Severity: $($_.severity))"
-        }
-        Write-Output ""
     }
 
     return $fileCount
@@ -65,25 +41,10 @@ function Check-FileAge {
         $fileAge = (Get-Date) - $file.LastWriteTime
         $ageInMinutes = $fileAge.TotalMinutes
 
-        $breachedThresholds = @()
         foreach ($threshold in $timeThresholds) {
             if ($ageInMinutes -ge $threshold.minutes) {
-                $breachedThresholds += $threshold
+                CheckSeverityThresholds -severity $threshold.severity -path $path -details "File age: $($ageInMinutes.ToString('F2')) minutes for $($file.Name)"
             }
-        }
-
-        if ($breachedThresholds.Count -gt 0) {
-            $highestSeverity = ($breachedThresholds | Sort-Object severity | Select-Object -First 1).severity
-            $longestTime = ($breachedThresholds | Sort-Object minutes -Descending | Select-Object -First 1).minutes
-            
-            Write-Output "File: $($file.Name) in $path"
-            Write-Output "  Age: $($ageInMinutes.ToString('F2')) minutes"
-            Write-Output "  Highest Time Severity: $highestSeverity (Threshold: $longestTime minutes)"
-            
-            $breachedThresholds | ForEach-Object {
-                Write-Output "  Breached: $($_.minutes) minutes (Severity: $($_.severity))"
-            }
-            Write-Output ""
         }
     }
 }
@@ -99,14 +60,27 @@ function Check-ZeroSizeFiles {
     $zeroSizeFiles = Get-ChildItem -Path $path -File -Filter $fileFilter | Where-Object { $_.Length -eq 0 }
 
     if ($zeroSizeFiles.Count -gt 0) {
-        Write-Output "Zero-size files found in $path (Filter: $fileFilter) (Severity: $zeroSizeSeverity):"
-        $zeroSizeFiles | ForEach-Object {
-            Write-Output "  $($_.Name)"
-        }
-        Write-Output ""
+        CheckSeverityThresholds -severity $zeroSizeSeverity -path $path -details "Zero-size files: $($zeroSizeFiles.Count)"
     }
 
     return $zeroSizeFiles.Count
+}
+
+# Checks severity thresholds and updates global variables
+function CheckSeverityThresholds {
+    param (
+        [int]$severity,
+        [string]$path,
+        [string]$details
+    )
+
+    if ($severity -ge 3) {
+        $script:globalThresholdMet = $true
+        $script:emailBody += "Severity 3 or higher met in $path - $details`n"
+    }
+    if ($severity -ge 2) {
+        Write-Output "Major error: Severity 2 or higher met in $path - $details"
+    }
 }
 
 # Performs comprehensive checks on a directory
@@ -120,19 +94,11 @@ function Check-Directory {
         [string]$fileFilter
     )
 
-    Write-Output "Checking directory: $path (Filter: $fileFilter)"
-
     $fileCount = Check-FileCount -path $path -countThresholds $countThresholds -fileFilter $fileFilter
-
     Check-FileAge -path $path -timeThresholds $timeThresholds -fileFilter $fileFilter
-
     if ($checkZeroSize) {
-        $zeroSizeCount = Check-ZeroSizeFiles -path $path -zeroSizeSeverity $zeroSizeSeverity -fileFilter $fileFilter
-        Write-Output "Zero-size files found: $zeroSizeCount"
+        Check-ZeroSizeFiles -path $path -zeroSizeSeverity $zeroSizeSeverity -fileFilter $fileFilter
     }
-
-    Write-Output "Total files matching filter in $path: $fileCount"
-    Write-Output "-----------------------------"
 }
 
 # Main execution loop
@@ -145,8 +111,9 @@ foreach ($dir in $config.directory_check) {
                     -fileFilter $dir.file_filter
 }
 
-# Check if the global threshold was met
+# Check if the global threshold was met and provide summary
 if ($globalThresholdMet) {
-    Write-Output "Global threshold met. Email body:"
-    Write-Output $emailBody
+    Write-Output "Checks completed. Thresholds met. Email body:`n$emailBody"
+} else {
+    Write-Output "Checks completed. All thresholds are within acceptable limits."
 }
