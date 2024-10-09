@@ -6,27 +6,11 @@ Import-Module powershell-yaml
 # Read the configuration file
 $config = Get-Content -Path "config.yml" | ConvertFrom-Yaml
 
-<#
-.SYNOPSIS
-Checks the number of files in a directory against specified thresholds.
+# Global variables
+$globalThresholdMet = $false
+$emailBody = ""
 
-.DESCRIPTION
-This function counts the files in the specified directory that match the given file filter
-and compares the count against the provided thresholds. It reports any breached thresholds
-along with their severities.
-
-.PARAMETER path
-The directory path to check.
-
-.PARAMETER countThresholds
-An array of threshold objects, each containing 'count' and 'severity' properties.
-
-.PARAMETER fileFilter
-A file filter string (e.g., "*.xml") to limit which files are checked.
-
-.OUTPUTS
-Returns the total file count and writes threshold breach information to the console.
-#>
+# Checks the number of files in a directory against specified thresholds
 function Check-FileCount {
     param (
         [string]$path,
@@ -34,18 +18,22 @@ function Check-FileCount {
         [string]$fileFilter
     )
 
-    # Get the total number of files in the directory that match the filter
     $fileCount = (Get-ChildItem -Path $path -File -Filter $fileFilter).Count
     $breachedThresholds = @()
 
-    # Check each threshold against the file count
     foreach ($threshold in $countThresholds) {
         if ($fileCount -ge $threshold.count) {
             $breachedThresholds += $threshold
+            if ($threshold.count -ge 3) {
+                $script:globalThresholdMet = $true
+                $script:emailBody += "Threshold of 3 or more met in $path`n"
+            }
+            if ($threshold.count -ge 2) {
+                Write-Output "Major error: Threshold of 2 or more met in $path"
+            }
         }
     }
 
-    # If any thresholds were breached, report the details
     if ($breachedThresholds.Count -gt 0) {
         $highestSeverity = ($breachedThresholds | Sort-Object severity | Select-Object -First 1).severity
         $highestCount = ($breachedThresholds | Sort-Object count -Descending | Select-Object -First 1).count
@@ -63,26 +51,7 @@ function Check-FileCount {
     return $fileCount
 }
 
-<#
-.SYNOPSIS
-Checks the age of files in a directory against specified time thresholds.
-
-.DESCRIPTION
-This function examines each file in the specified directory that matches the given file filter
-and compares its age against the provided time thresholds. It reports any files that exceed the thresholds.
-
-.PARAMETER path
-The directory path to check.
-
-.PARAMETER timeThresholds
-An array of threshold objects, each containing 'minutes' and 'severity' properties.
-
-.PARAMETER fileFilter
-A file filter string (e.g., "*.xml") to limit which files are checked.
-
-.OUTPUTS
-Writes information about files exceeding age thresholds to the console.
-#>
+# Checks the age of files in a directory against specified time thresholds
 function Check-FileAge {
     param (
         [string]$path,
@@ -90,10 +59,8 @@ function Check-FileAge {
         [string]$fileFilter
     )
 
-    # Get all files in the directory that match the filter
     $files = Get-ChildItem -Path $path -File -Filter $fileFilter
 
-    # Check each file against the time thresholds
     foreach ($file in $files) {
         $fileAge = (Get-Date) - $file.LastWriteTime
         $ageInMinutes = $fileAge.TotalMinutes
@@ -105,7 +72,6 @@ function Check-FileAge {
             }
         }
 
-        # If any thresholds were breached for this file, report the details
         if ($breachedThresholds.Count -gt 0) {
             $highestSeverity = ($breachedThresholds | Sort-Object severity | Select-Object -First 1).severity
             $longestTime = ($breachedThresholds | Sort-Object minutes -Descending | Select-Object -First 1).minutes
@@ -122,26 +88,7 @@ function Check-FileAge {
     }
 }
 
-<#
-.SYNOPSIS
-Checks for zero-size files in a directory.
-
-.DESCRIPTION
-This function identifies any files with zero size in the specified directory that match the given file filter
-and reports them along with the specified severity level.
-
-.PARAMETER path
-The directory path to check.
-
-.PARAMETER zeroSizeSeverity
-The severity level to assign to zero-size file findings.
-
-.PARAMETER fileFilter
-A file filter string (e.g., "*.xml") to limit which files are checked.
-
-.OUTPUTS
-Writes information about zero-size files to the console and returns the count of such files.
-#>
+# Checks for zero-size files in a directory
 function Check-ZeroSizeFiles {
     param (
         [string]$path,
@@ -149,10 +96,8 @@ function Check-ZeroSizeFiles {
         [string]$fileFilter
     )
 
-    # Find all zero-size files in the directory that match the filter
     $zeroSizeFiles = Get-ChildItem -Path $path -File -Filter $fileFilter | Where-Object { $_.Length -eq 0 }
 
-    # If any zero-size files were found, report them
     if ($zeroSizeFiles.Count -gt 0) {
         Write-Output "Zero-size files found in $path (Filter: $fileFilter) (Severity: $zeroSizeSeverity):"
         $zeroSizeFiles | ForEach-Object {
@@ -164,35 +109,7 @@ function Check-ZeroSizeFiles {
     return $zeroSizeFiles.Count
 }
 
-<#
-.SYNOPSIS
-Performs comprehensive checks on a directory.
-
-.DESCRIPTION
-This function orchestrates all the individual checks (file count, file age, zero-size files)
-for a given directory based on the provided parameters and file filter.
-
-.PARAMETER path
-The directory path to check.
-
-.PARAMETER timeThresholds
-An array of time threshold objects for file age checks.
-
-.PARAMETER countThresholds
-An array of count threshold objects for file count checks.
-
-.PARAMETER checkZeroSize
-A boolean indicating whether to perform zero-size file checks.
-
-.PARAMETER zeroSizeSeverity
-The severity level to assign to zero-size file findings.
-
-.PARAMETER fileFilter
-A file filter string (e.g., "*.xml") to limit which files are checked.
-
-.OUTPUTS
-Writes comprehensive check results to the console.
-#>
+# Performs comprehensive checks on a directory
 function Check-Directory {
     param (
         [string]$path,
@@ -205,13 +122,10 @@ function Check-Directory {
 
     Write-Output "Checking directory: $path (Filter: $fileFilter)"
 
-    # Perform file count check
     $fileCount = Check-FileCount -path $path -countThresholds $countThresholds -fileFilter $fileFilter
 
-    # Perform file age check
     Check-FileAge -path $path -timeThresholds $timeThresholds -fileFilter $fileFilter
 
-    # Perform zero-size file check if enabled
     if ($checkZeroSize) {
         $zeroSizeCount = Check-ZeroSizeFiles -path $path -zeroSizeSeverity $zeroSizeSeverity -fileFilter $fileFilter
         Write-Output "Zero-size files found: $zeroSizeCount"
@@ -222,7 +136,6 @@ function Check-Directory {
 }
 
 # Main execution loop
-# Iterate through each directory specified in the configuration and perform checks
 foreach ($dir in $config.directory_check) {
     Check-Directory -path $dir.path `
                     -timeThresholds $dir.time_thresholds `
@@ -230,4 +143,10 @@ foreach ($dir in $config.directory_check) {
                     -checkZeroSize $dir.check_zero_size `
                     -zeroSizeSeverity $dir.zero_size_severity `
                     -fileFilter $dir.file_filter
+}
+
+# Check if the global threshold was met
+if ($globalThresholdMet) {
+    Write-Output "Global threshold met. Email body:"
+    Write-Output $emailBody
 }
