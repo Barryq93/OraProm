@@ -114,3 +114,44 @@ if ($globalThresholdMet) {
 } else {
     Write-Output "$timestamp [INFO] Checks completed. All thresholds are within acceptable limits."
 }
+
+
+
+function CheckSeverityThresholds {
+    param (
+        [int]$severity,
+        [string]$path,
+        [string]$details
+    )
+
+    Write-Output "$timestamp [DEBUG] Checking severity: $severity for path: $path"
+
+    if ($severity -ge 4) {
+        $script:globalThresholdMet = $true
+        $script:emailBody += "$timestamp [ERROR] Critical: Severity 4 or higher met in $path - $details`n"
+        Write-Output "$timestamp [ERROR] Critical: Severity 4 or higher met in $path"
+    }
+    elseif ($severity -eq 3) {
+        $script:globalThresholdMet = $true
+        $script:emailBody += "$timestamp [ERROR] Severity 3 met in $path - $details`n"
+        Write-Output "$timestamp [ERROR] Severity 3 met in $path"
+    }
+    elseif ($severity -eq 2 -and -not $script:reportedMajorErrors.ContainsKey($path)) {
+        Write-Output "$timestamp [ERROR] Major error: Severity 2 met in $path"
+        $script:reportedMajorErrors[$path] = $true
+    }
+    else {
+        Write-Output "$timestamp [INFO] No threshold breached for path: $path (Severity: $severity)"
+    }
+}
+
+
+foreach ($dir in $config.directory_check) {
+    Write-Output "$timestamp [INFO] Checking directory: $($dir.path)"
+    Check-Directory -path $dir.path `
+                    -timeThresholds $dir.time_thresholds `
+                    -countThresholds $dir.count_thresholds `
+                    -checkZeroSize $dir.check_zero_size `
+                    -zeroSizeSeverity $dir.zero_size_severity `
+                    -fileFilter $dir.file_filter
+}
