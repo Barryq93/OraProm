@@ -1,0 +1,125 @@
+# Program 1 - Directory Check
+
+# Import the YAML module
+Import-Module powershell-yaml
+
+# Read the configuration file
+$config = Get-Content -Path "config.yml" | ConvertFrom-Yaml
+
+function Check-FileCount {
+    param (
+        [string]$path,
+        [array]$countThresholds
+    )
+
+    $fileCount = (Get-ChildItem -Path $path -File).Count
+    $breachedThresholds = @()
+
+    foreach ($threshold in $countThresholds) {
+        if ($fileCount -ge $threshold.count) {
+            $breachedThresholds += $threshold
+        }
+    }
+
+    if ($breachedThresholds.Count -gt 0) {
+        $highestSeverity = ($breachedThresholds | Sort-Object severity | Select-Object -First 1).severity
+        $highestCount = ($breachedThresholds | Sort-Object count -Descending | Select-Object -First 1).count
+        
+        Write-Output "Directory: $path"
+        Write-Output "  Total files: $fileCount"
+        Write-Output "  Highest Count Severity: $highestSeverity (Threshold: $highestCount files)"
+        
+        $breachedThresholds | ForEach-Object {
+            Write-Output "  Breached: $($_.count) files (Severity: $($_.severity))"
+        }
+        Write-Output ""
+    }
+
+    return $fileCount
+}
+
+function Check-FileAge {
+    param (
+        [string]$path,
+        [array]$timeThresholds
+    )
+
+    $files = Get-ChildItem -Path $path -File
+
+    foreach ($file in $files) {
+        $fileAge = (Get-Date) - $file.LastWriteTime
+        $ageInMinutes = $fileAge.TotalMinutes
+
+        $breachedThresholds = @()
+        foreach ($threshold in $timeThresholds) {
+            if ($ageInMinutes -ge $threshold.minutes) {
+                $breachedThresholds += $threshold
+            }
+        }
+
+        if ($breachedThresholds.Count -gt 0) {
+            $highestSeverity = ($breachedThresholds | Sort-Object severity | Select-Object -First 1).severity
+            $longestTime = ($breachedThresholds | Sort-Object minutes -Descending | Select-Object -First 1).minutes
+            
+            Write-Output "File: $($file.Name) in $path"
+            Write-Output "  Age: $($ageInMinutes.ToString('F2')) minutes"
+            Write-Output "  Highest Time Severity: $highestSeverity (Threshold: $longestTime minutes)"
+            
+            $breachedThresholds | ForEach-Object {
+                Write-Output "  Breached: $($_.minutes) minutes (Severity: $($_.severity))"
+            }
+            Write-Output ""
+        }
+    }
+}
+
+function Check-ZeroSizeFiles {
+    param (
+        [string]$path,
+        [int]$zeroSizeSeverity
+    )
+
+    $zeroSizeFiles = Get-ChildItem -Path $path -File | Where-Object { $_.Length -eq 0 }
+
+    if ($zeroSizeFiles.Count -gt 0) {
+        Write-Output "Zero-size files found in $path (Severity: $zeroSizeSeverity):"
+        $zeroSizeFiles | ForEach-Object {
+            Write-Output "  $($_.Name)"
+        }
+        Write-Output ""
+    }
+
+    return $zeroSizeFiles.Count
+}
+
+function Check-Directory {
+    param (
+        [string]$path,
+        [array]$timeThresholds,
+        [array]$countThresholds,
+        [bool]$checkZeroSize,
+        [int]$zeroSizeSeverity
+    )
+
+    Write-Output "Checking directory: $path"
+
+    $fileCount = Check-FileCount -path $path -countThresholds $countThresholds
+    Check-FileAge -path $path -timeThresholds $timeThresholds
+
+    if ($checkZeroSize) {
+        $zeroSizeCount = Check-ZeroSizeFiles -path $path -zeroSizeSeverity $zeroSizeSeverity
+        Write-Output "Zero-size files found: $zeroSizeCount"
+    }
+
+    Write-Output "Total files in $path: $fileCount"
+    Write-Output "-----------------------------"
+}
+
+# Main execution
+foreach ($dir in $config.directory_check) {
+    Check-Directory -path $dir.path `
+                    -timeThresholds $dir.time_thresholds `
+                    -countThresholds $dir.count_thresholds `
+                    -checkZeroSize $dir.check_zero_size `
+                    -zeroSizeSeverity $dir.zero_size_severity
+}
