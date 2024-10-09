@@ -6,6 +6,7 @@ $config = Get-Content -Path "config.yml" | ConvertFrom-Yaml
 $globalThresholdMet = $false
 $emailBody = ""
 $reportedMajorErrors = @{}
+$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
 # Checks the number of files in a directory against specified thresholds
 function Check-FileCount {
@@ -71,10 +72,10 @@ function CheckSeverityThresholds {
 
     if ($severity -ge 3) {
         $script:globalThresholdMet = $true
-        $script:emailBody += "Severity 3 or higher met in $path - $details`n"
+        $script:emailBody += "$timestamp [ERROR] Severity 3 or higher met in $path - $details`n"
     }
     if ($severity -ge 2 -and -not $script:reportedMajorErrors.ContainsKey($path)) {
-        Write-Output "Major error: Severity 2 or higher met in $path"
+        Write-Output "$timestamp [ERROR] Major error: Severity 2 or higher met in $path"
         $script:reportedMajorErrors[$path] = $true
     }
 }
@@ -109,7 +110,7 @@ foreach ($dir in $config.directory_check) {
 
 # Check if the global threshold was met and provide summary
 if ($globalThresholdMet) {
-    Write-Output "Checks completed. Thresholds met. Email body:`n$emailBody"
+    Write-Output "$timestamp [ERROR] Checks completed. Thresholds met. Email body:`n$emailBody"
 } else {
-    Write-Output "Checks completed. All thresholds are within acceptable limits."
+    Write-Output "$timestamp [INFO] Checks completed. All thresholds are within acceptable limits."
 }
