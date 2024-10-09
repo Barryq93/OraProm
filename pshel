@@ -5,6 +5,7 @@ $config = Get-Content -Path "config.yml" | ConvertFrom-Yaml
 
 $globalThresholdMet = $false
 $emailBody = ""
+$reportedMajorErrors = @{}
 
 # Checks the number of files in a directory against specified thresholds
 function Check-FileCount {
@@ -21,8 +22,6 @@ function Check-FileCount {
             CheckSeverityThresholds -severity $threshold.severity -path $path -details "File count: $fileCount (Threshold: $($threshold.count))"
         }
     }
-
-    return $fileCount
 }
 
 # Checks the age of files in a directory against specified time thresholds
@@ -60,8 +59,6 @@ function Check-ZeroSizeFiles {
     if ($zeroSizeFiles.Count -gt 0) {
         CheckSeverityThresholds -severity $zeroSizeSeverity -path $path -details "Zero-size files: $($zeroSizeFiles.Count)"
     }
-
-    return $zeroSizeFiles.Count
 }
 
 # Checks severity thresholds and updates global variables
@@ -76,8 +73,9 @@ function CheckSeverityThresholds {
         $script:globalThresholdMet = $true
         $script:emailBody += "Severity 3 or higher met in $path - $details`n"
     }
-    if ($severity -ge 2) {
-        Write-Output "Major error: Severity 2 or higher met in $path - $details"
+    if ($severity -ge 2 -and -not $script:reportedMajorErrors.ContainsKey($path)) {
+        Write-Output "Major error: Severity 2 or higher met in $path"
+        $script:reportedMajorErrors[$path] = $true
     }
 }
 
