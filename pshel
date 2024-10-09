@@ -15,12 +15,10 @@ function Check-FileCount {
     )
 
     $fileCount = (Get-ChildItem -Path $path -File -Filter $fileFilter).Count
-    $breachedThresholds = @()
 
     foreach ($threshold in $countThresholds) {
         if ($fileCount -ge $threshold.count) {
-            $breachedThresholds += $threshold
-            CheckSeverityThresholds -severity $threshold.severity -path $path -details "File count: $fileCount"
+            CheckSeverityThresholds -severity $threshold.severity -path $path -details "File count: $fileCount (Threshold: $($threshold.count))"
         }
     }
 
@@ -43,7 +41,7 @@ function Check-FileAge {
 
         foreach ($threshold in $timeThresholds) {
             if ($ageInMinutes -ge $threshold.minutes) {
-                CheckSeverityThresholds -severity $threshold.severity -path $path -details "File age: $($ageInMinutes.ToString('F2')) minutes for $($file.Name)"
+                CheckSeverityThresholds -severity $threshold.severity -path $path -details "File age: $($ageInMinutes.ToString('F2')) minutes for $($file.Name) (Threshold: $($threshold.minutes) minutes)"
             }
         }
     }
@@ -94,7 +92,7 @@ function Check-Directory {
         [string]$fileFilter
     )
 
-    $fileCount = Check-FileCount -path $path -countThresholds $countThresholds -fileFilter $fileFilter
+    Check-FileCount -path $path -countThresholds $countThresholds -fileFilter $fileFilter
     Check-FileAge -path $path -timeThresholds $timeThresholds -fileFilter $fileFilter
     if ($checkZeroSize) {
         Check-ZeroSizeFiles -path $path -zeroSizeSeverity $zeroSizeSeverity -fileFilter $fileFilter
