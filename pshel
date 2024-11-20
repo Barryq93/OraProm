@@ -1,164 +1,70 @@
-Import-Module powershell-yaml
-$config = Get-Content -Path "config.yml" | ConvertFrom-Yaml
+#!/bin/bash
 
-$globalThresholdMet = $false
-$emailBody = ""
-$reportedMajorErrors = @{}
-$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+# This script recursively changes ownership of files and directories
+# in a specified directory to the provided group and user.
+# It also measures the total time and the time taken for each directory.
 
-function Check-FileAge {
-    param (
-        [string]$file,
-        [hashtable]$timeThresholds,
-        [ref]$emailBodyRef
-    )
+# Ensure the script is run with sudo or root privileges
+if [[ $EUID -ne 0 ]]; then
+    echo "This script must be run as root. Please use sudo."
+    exit 1
+fi
 
-    $fileAge = (Get-Date) - (Get-Item $file).LastWriteTime
-    $severity = 0
+# Check if the user has provided correct arguments
+if [[ $# -ne 2 ]]; then
+    echo "Usage: $0 <group:user> <directory>"
+    echo "Example: $0 developers:john /path/to/dir"
+    exit 1
+fi
 
-    foreach ($threshold in $timeThresholds.GetEnumerator() | Sort-Object {[int]$_.Name} -Descending) {
-        if ($fileAge -gt [TimeSpan]::Parse($threshold.Value)) {
-            $severity = [int]$threshold.Name
-            break
-        }
-    }
+# Parse arguments
+OWNER=$1    # Ownership format: group:user
+DIR=$2      # Target directory to process
 
-    if ($severity -gt 0) {
-        $details = "File age: $($fileAge.ToString())"
-        $emailBodyRef.Value += CheckSeverityThresholds -severity $severity -path $file -details $details
-    }
+# Check if the target directory exists
+if [[ ! -d $DIR ]]; then
+    echo "Error: Directory '$DIR' does not exist."
+    exit 1
+fi
 
-    return $severity
-}
+# Start timer to measure script execution time
+START_TIME=$(date +%s)
 
-function Check-FileCount {
-    param (
-        [string]$path,
-        [hashtable]$countThresholds,
-        [string]$fileFilter,
-        [ref]$emailBodyRef
-    )
-
-    $fileCount = (Get-ChildItem -Path $path -File -Filter $fileFilter).Count
-    $severity = 0
-
-    foreach ($threshold in $countThresholds.GetEnumerator() | Sort-Object {[int]$_.Name} -Descending) {
-        if ($fileCount -ge $threshold.Value) {
-            $severity = [int]$threshold.Name
-            break
-        }
-    }
-
-    if ($severity -gt 0) {
-        $details = "File count: $fileCount"
-        $emailBodyRef.Value += CheckSeverityThresholds -severity $severity -path $path -details $details
-    }
-
-    return $severity
-}
-
-function Check-ZeroSizeFiles {
-    param (
-        [string]$path,
-        [int]$zeroSizeSeverity,
-        [string]$fileFilter,
-        [ref]$emailBodyRef
-    )
-
-    $zeroSizeFiles = Get-ChildItem -Path $path -File -Filter $fileFilter | Where-Object { $_.Length -eq 0 }
+# Function to process items in a given directory and time each one
+process_items() {
+    local path=$1
+    echo "Starting processing for: $path"
     
-    if ($zeroSizeFiles.Count -gt 0) {
-        $details = "Zero-size files found: $($zeroSizeFiles.Count)"
-        $emailBodyRef.Value += CheckSeverityThresholds -severity $zeroSizeSeverity -path $path -details $details
-        return $zeroSizeSeverity
-    }
-
-    return 0
+    # Record start time for this directory
+    DIR_START_TIME=$(date +%s)
+    
+    # Process all items in this directory
+    find "$path" -mindepth 1 -maxdepth 1 -print0 | xargs -0 -n 1000 -P 8 chown "$OWNER"
+    
+    # Record end time for this directory
+    DIR_END_TIME=$(date +%s)
+    
+    # Calculate elapsed time for this directory
+    DIR_ELAPSED_TIME=$((DIR_END_TIME - DIR_START_TIME))
+    echo "Finished processing for: $path (Time: $DIR_ELAPSED_TIME seconds)"
 }
 
-function CheckSeverityThresholds {
-    param (
-        [int]$severity,
-        [string]$path,
-        [string]$details
-    )
+# Change ownership of the root directory itself
+echo "Changing ownership of the root directory: $DIR"
+chown "$OWNER" "$DIR"
 
-    $message = ""
-    Write-Output "$timestamp [DEBUG] Checking severity: $severity for path: $path"
+# Export variables and function for use in subshells
+export OWNER
+export -f process_items
 
-    if ($severity -ge 4) {
-        $script:globalThresholdMet = $true
-        $message = "$timestamp [ERROR] Critical: Severity 4 or higher met in $path - $details`n"
-        Write-Output "$timestamp [ERROR] Critical: Severity 4 or higher met in $path"
-    }
-    elseif ($severity -eq 3) {
-        $script:globalThresholdMet = $true
-        $message = "$timestamp [ERROR] Severity 3 met in $path - $details`n"
-        Write-Output "$timestamp [ERROR] Severity 3 met in $path"
-    }
-    elseif ($severity -eq 2 -and -not $script:reportedMajorErrors.ContainsKey($path)) {
-        Write-Output "$timestamp [ERROR] Major error: Severity 2 met in $path"
-        $script:reportedMajorErrors[$path] = $true
-    }
-    else {
-        Write-Output "$timestamp [INFO] No threshold breached for path: $path (Severity: $severity)"
-    }
+# Recursively process all subdirectories in parallel
+echo "Processing all subdirectories under: $DIR"
+find "$DIR" -type d -print0 | xargs -0 -n 1 -P 8 bash -c 'process_items "$@"' _
 
-    return $message
-}
+# End timer and calculate total elapsed time
+END_TIME=$(date +%s)
+TOTAL_ELAPSED_TIME=$((END_TIME - START_TIME))
 
-function Check-Directory {
-    param (
-        [string]$path,
-        [hashtable]$timeThresholds,
-        [hashtable]$countThresholds,
-        [bool]$checkZeroSize,
-        [int]$zeroSizeSeverity,
-        [string]$fileFilter,
-        [ref]$emailBodyRef
-    )
-
-    $maxSeverity = 0
-
-    # Check file count
-    $countSeverity = Check-FileCount -path $path -countThresholds $countThresholds -fileFilter $fileFilter -emailBodyRef $emailBodyRef
-    $maxSeverity = [Math]::Max($maxSeverity, $countSeverity)
-
-    # Check individual files
-    Get-ChildItem -Path $path -File -Filter $fileFilter | ForEach-Object {
-        $ageSeverity = Check-FileAge -file $_.FullName -timeThresholds $timeThresholds -emailBodyRef $emailBodyRef
-        $maxSeverity = [Math]::Max($maxSeverity, $ageSeverity)
-    }
-
-    # Check for zero-size files if enabled
-    if ($checkZeroSize) {
-        $zeroSizeSeverity = Check-ZeroSizeFiles -path $path -zeroSizeSeverity $zeroSizeSeverity -fileFilter $fileFilter -emailBodyRef $emailBodyRef
-        $maxSeverity = [Math]::Max($maxSeverity, $zeroSizeSeverity)
-    }
-
-    return $maxSeverity
-}
-
-# Main execution loop
-foreach ($dir in $config.directory_check) {
-    Write-Output "$timestamp [INFO] Checking directory: $($dir.path)"
-    $maxSeverity = Check-Directory -path $dir.path `
-                    -timeThresholds $dir.time_thresholds `
-                    -countThresholds $dir.count_thresholds `
-                    -checkZeroSize $dir.check_zero_size `
-                    -zeroSizeSeverity $dir.zero_size_severity `
-                    -fileFilter $dir.file_filter `
-                    -emailBodyRef ([ref]$emailBody)
-
-    Write-Output "$timestamp [INFO] Max severity for $($dir.path): $maxSeverity"
-}
-
-# Check if the global threshold was met and provide summary
-if ($globalThresholdMet) {
-    Write-Output "$timestamp [ERROR] Checks completed. Thresholds met."
-} else {
-    Write-Output "$timestamp [INFO] Checks completed. All thresholds are within acceptable limits."
-}
-
-# Always write out the email body
-Write-Output "Email body:`n$emailBody"
+# Output elapsed time
+echo "Ownership change completed!"
+echo "Total elapsed time: $((TOTAL_ELAPSED_TIME / 60)) minutes and $((TOTAL_ELAPSED_TIME % 60)) seconds."
