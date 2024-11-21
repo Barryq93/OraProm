@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # This script recursively changes ownership of files and directories
-# in a specified directory to the provided group and user.
+# in a specified directory to the provided user and group.
 # It also measures the total time and the time taken for each directory.
 
 # Ensure the script is run with sudo or root privileges
@@ -12,13 +12,13 @@ fi
 
 # Check if the user has provided correct arguments
 if [[ $# -ne 2 ]]; then
-    echo "Usage: $0 <group:user> <directory>"
-    echo "Example: $0 developers:john /path/to/dir"
+    echo "Usage: $0 <user:group> <directory>"
+    echo "Example: $0 john:developers /path/to/dir"
     exit 1
 fi
 
 # Parse arguments
-OWNER=$1    # Ownership format: group:user
+OWNER=$1    # Ownership format: user:group
 DIR=$2      # Target directory to process
 
 # Check if the target directory exists
@@ -38,15 +38,13 @@ process_items() {
     # Record start time for this directory
     DIR_START_TIME=$(date +%s)
     
-    # Process all items in this directory
-    # `find "$path"` locates all items under the specified path.
-    # `-mindepth 1` ensures it doesn't include the directory itself.
-    # `-maxdepth 1` limits the search to immediate children of the directory.
+    # Change ownership of all files and directories under the current directory
+    # `find "$path"` locates all items (files and directories).
+    # `-mindepth 1` ensures the directory itself is excluded.
     # `-print0` produces null-separated output for safe handling of filenames with spaces or special characters.
-    # `xargs -0` reads the null-separated output and passes it to the `chown` command.
-    # `-n 1000` processes up to 1000 items per command invocation.
-    # `-P 8` runs up to 8 processes in parallel to speed up processing.
-    find "$path" -mindepth 1 -maxdepth 1 -print0 | xargs -0 -n 1000 -P 8 chown "$OWNER"
+    # `xargs -0` processes the null-separated list.
+    # `chown "$OWNER"` applies the ownership change.
+    find "$path" -mindepth 1 -print0 | xargs -0 -n 1000 -P 8 chown "$OWNER"
     
     # Record end time for this directory
     DIR_END_TIME=$(date +%s)
@@ -64,15 +62,17 @@ chown "$OWNER" "$DIR"
 export OWNER
 export -f process_items
 
-# Recursively process all subdirectories in parallel
-# `find "$DIR"` locates all subdirectories starting from the specified root directory.
-# `-type d` restricts the results to directories only.
+# Recursively process all subdirectories and include directories themselves
+# `find "$DIR"` locates all subdirectories, including their parents, starting from the root.
+# `-type d` ensures only directories are selected.
 # `-print0` produces null-separated output for safe handling of directory names with spaces or special characters.
-# `xargs -0` reads the null-separated output.
-# `-n 1` processes one directory at a time per subprocess.
-# `-P 8` runs up to 8 subprocesses in parallel.
+# Each directory is passed to the `process_items` function for processing.
 echo "Processing all subdirectories under: $DIR"
 find "$DIR" -type d -print0 | xargs -0 -n 1 -P 8 bash -c 'process_items "$@"' _
+
+# Change ownership of all files in the root directory itself (not already done in subdirectories)
+echo "Changing ownership of files in the root directory: $DIR"
+find "$DIR" -mindepth 1 -maxdepth 1 ! -type d -print0 | xargs -0 -n 1000 -P 8 chown "$OWNER"
 
 # End timer and calculate total elapsed time
 END_TIME=$(date +%s)
