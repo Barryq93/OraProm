@@ -41,9 +41,9 @@ process_items() {
     # Record start time for this directory
     DIR_START_TIME=$(date +%s)
     
-    # Change ownership of all files and directories under the current directory
-    # Increment the counter for each processed item
-    find "$path" -mindepth 1 -print0 | xargs -0 -n 1000 -P 8 chown "$OWNER" && ((PROCESSED_COUNT+=1000)) || true
+    # Find items that do not already have the desired ownership and change ownership
+    find "$path" -mindepth 1 ! -user "${OWNER%%:*}" ! -group "${OWNER##*:}" -print0 | \
+        xargs -0 -n 1000 -P 8 chown "$OWNER" && ((PROCESSED_COUNT+=1000)) || true
     
     # Record end time for this directory
     DIR_END_TIME=$(date +%s)
@@ -53,9 +53,11 @@ process_items() {
     echo "Finished processing for: $path (Time: $DIR_ELAPSED_TIME seconds)"
 }
 
-# Change ownership of the root directory itself
+# Change ownership of the root directory itself if necessary
 echo "Changing ownership of the root directory: $DIR"
-chown "$OWNER" "$DIR" && ((PROCESSED_COUNT++))
+if [[ $(stat -c "%U:%G" "$DIR") != "$OWNER" ]]; then
+    chown "$OWNER" "$DIR" && ((PROCESSED_COUNT++))
+fi
 
 # Export variables and function for use in subshells
 export OWNER
@@ -63,16 +65,14 @@ export PROCESSED_COUNT
 export -f process_items
 
 # Recursively process all subdirectories and include directories themselves
-# `find "$DIR"` locates all subdirectories, including their parents, starting from the root.
-# `-type d` ensures only directories are selected.
-# `-print0` produces null-separated output for safe handling of directory names with spaces or special characters.
-# Each directory is passed to the `process_items` function for processing.
 echo "Processing all subdirectories under: $DIR"
-find "$DIR" -type d -print0 | xargs -0 -n 1 -P 8 bash -c 'process_items "$@"' _ || true
+find "$DIR" -type d ! -user "${OWNER%%:*}" ! -group "${OWNER##*:}" -print0 | \
+    xargs -0 -n 1 -P 8 bash -c 'process_items "$@"' _ || true
 
 # Change ownership of all files in the root directory itself (not already done in subdirectories)
 echo "Changing ownership of files in the root directory: $DIR"
-find "$DIR" -mindepth 1 -maxdepth 1 ! -type d -print0 | xargs -0 -n 1000 -P 8 chown "$OWNER" && ((PROCESSED_COUNT+=1000)) || true
+find "$DIR" -mindepth 1 -maxdepth 1 ! -type d ! -user "${OWNER%%:*}" ! -group "${OWNER##*:}" -print0 | \
+    xargs -0 -n 1000 -P 8 chown "$OWNER" && ((PROCESSED_COUNT+=1000)) || true
 
 # End timer and calculate total elapsed time
 END_TIME=$(date +%s)
