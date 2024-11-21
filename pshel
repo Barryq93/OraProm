@@ -39,6 +39,13 @@ process_items() {
     DIR_START_TIME=$(date +%s)
     
     # Process all items in this directory
+    # `find "$path"` locates all items under the specified path.
+    # `-mindepth 1` ensures it doesn't include the directory itself.
+    # `-maxdepth 1` limits the search to immediate children of the directory.
+    # `-print0` produces null-separated output for safe handling of filenames with spaces or special characters.
+    # `xargs -0` reads the null-separated output and passes it to the `chown` command.
+    # `-n 1000` processes up to 1000 items per command invocation.
+    # `-P 8` runs up to 8 processes in parallel to speed up processing.
     find "$path" -mindepth 1 -maxdepth 1 -print0 | xargs -0 -n 1000 -P 8 chown "$OWNER"
     
     # Record end time for this directory
@@ -58,6 +65,12 @@ export OWNER
 export -f process_items
 
 # Recursively process all subdirectories in parallel
+# `find "$DIR"` locates all subdirectories starting from the specified root directory.
+# `-type d` restricts the results to directories only.
+# `-print0` produces null-separated output for safe handling of directory names with spaces or special characters.
+# `xargs -0` reads the null-separated output.
+# `-n 1` processes one directory at a time per subprocess.
+# `-P 8` runs up to 8 subprocesses in parallel.
 echo "Processing all subdirectories under: $DIR"
 find "$DIR" -type d -print0 | xargs -0 -n 1 -P 8 bash -c 'process_items "$@"' _
 
