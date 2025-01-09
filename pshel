@@ -1,84 +1,25 @@
-#!/bin/bash
-
-# This script recursively changes ownership of files and directories
-# in a specified directory to the provided user and group.
-# It also measures the total time and the time taken for each directory.
-
-# Ensure the script is run with sudo or root privileges
-if [[ $EUID -ne 0 ]]; then
-    echo "This script must be run as root. Please use sudo."
-    exit 1
-fi
-
-# Check if the user has provided correct arguments
-if [[ $# -ne 2 ]]; then
-    echo "Usage: $0 <user:group> <directory>"
-    echo "Example: $0 john:developers /path/to/dir"
-    exit 1
-fi
-
-# Parse arguments
-OWNER=$1    # Ownership format: user:group
-DIR=$2      # Target directory to process
-
-# Check if the target directory exists
-if [[ ! -d $DIR ]]; then
-    echo "Error: Directory '$DIR' does not exist."
-    exit 1
-fi
-
-# Initialize a counter for processed files and directories
-PROCESSED_COUNT=0
-
-# Start timer to measure script execution time
-START_TIME=$(date +%s)
-
-# Function to process items in a given directory and time each one
-process_items() {
-    local path=$1
-    echo "Starting processing for: $path"
-    
-    # Record start time for this directory
-    DIR_START_TIME=$(date +%s)
-    
-    # Find items that do not already have the desired ownership and change ownership
-    find "$path" -mindepth 1 ! -user "${OWNER%%:*}" ! -group "${OWNER##*:}" -print0 | \
-        xargs -0 -n 1000 -P 8 chown "$OWNER" && ((PROCESSED_COUNT+=1000)) || true
-    
-    # Record end time for this directory
-    DIR_END_TIME=$(date +%s)
-    
-    # Calculate elapsed time for this directory
-    DIR_ELAPSED_TIME=$((DIR_END_TIME - DIR_START_TIME))
-    echo "Finished processing for: $path (Time: $DIR_ELAPSED_TIME seconds)"
-}
-
-# Change ownership of the root directory itself if necessary
-echo "Changing ownership of the root directory: $DIR"
-if [[ $(stat -c "%U:%G" "$DIR") != "$OWNER" ]]; then
-    chown "$OWNER" "$DIR" && ((PROCESSED_COUNT++))
-fi
-
-# Export variables and function for use in subshells
-export OWNER
-export PROCESSED_COUNT
-export -f process_items
-
-# Recursively process all subdirectories and include directories themselves
-echo "Processing all subdirectories under: $DIR"
-find "$DIR" -type d ! -user "${OWNER%%:*}" ! -group "${OWNER##*:}" -print0 | \
-    xargs -0 -n 1 -P 8 bash -c 'process_items "$@"' _ || true
-
-# Change ownership of all files in the root directory itself (not already done in subdirectories)
-echo "Changing ownership of files in the root directory: $DIR"
-find "$DIR" -mindepth 1 -maxdepth 1 ! -type d ! -user "${OWNER%%:*}" ! -group "${OWNER##*:}" -print0 | \
-    xargs -0 -n 1000 -P 8 chown "$OWNER" && ((PROCESSED_COUNT+=1000)) || true
-
-# End timer and calculate total elapsed time
-END_TIME=$(date +%s)
-TOTAL_ELAPSED_TIME=$((END_TIME - START_TIME))
-
-# Output elapsed time and total files processed
-echo "Ownership change completed!"
-echo "Total files and directories processed: $PROCESSED_COUNT"
-echo "Total elapsed time: $((TOTAL_ELAPSED_TIME / 60)) minutes and $((TOTAL_ELAPSED_TIME % 60)) seconds."
+What:
+ * Parental Leave Coverage: Successfully managed and maintained day-to-day operations of the [Department/Team Name] during my manager's parental leave, ensuring seamless service delivery and meeting all critical deadlines.
+ * ECM System Upgrade: Played a key role in the successful upgrade of our Enterprise Content Management (ECM) system, including [mention specific tasks like testing, training, or data migration]. This upgrade will significantly improve [mention benefits like efficiency, security, or user experience].
+ * Incident Management: Served as the primary point of contact for all critical incidents and issues, ensuring prompt resolution and minimizing service disruption. This included [mention specific examples like troubleshooting technical problems, coordinating with support teams, or communicating with stakeholders].
+How:
+ * Parental Leave Coverage:
+   * Prioritized and delegated tasks effectively.
+   * Maintained open communication with my manager and stakeholders.
+   * Proactively identified and addressed potential challenges.
+   * Leveraged existing processes and tools to ensure continuity of operations.
+ * ECM System Upgrade:
+   * Actively participated in all phases of the upgrade project, from planning and testing to implementation and user training.
+   * Collaborated closely with IT and business stakeholders to ensure a smooth transition.
+   * Provided clear and concise communication to end-users throughout the process.
+   * Proactively identified and resolved any issues that arose during the upgrade.
+ * Incident Management:
+   * Developed and implemented robust incident response procedures.
+   * Utilized strong analytical and problem-solving skills to diagnose and resolve issues quickly and efficiently.
+   * Maintained clear and concise documentation of all incidents and resolutions.
+   * Effectively communicated incident status and resolution updates to stakeholders.
+Tips:
+ * Quantify your achievements whenever possible: For example, "Reduced incident response times by 15%." or "Successfully trained 50+ employees on the new ECM system."
+ * Use action verbs: Instead of "Was involved in," try "Led," "Managed," "Implemented," "Improved," etc.
+ * Focus on the impact of your work: How did your actions benefit the team, department, or organization as a whole?
+Remember to tailor these examples to your specific experiences and the requirements of your performance review. Good luck!
