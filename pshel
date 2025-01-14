@@ -2,38 +2,36 @@
 $csvFile = Read-Host "Enter the path to the CSV file:"
 $groupName = Read-Host "Enter the group name:"
 
-# Read the CSV file
-$users = Import-Csv -Path $csvFile -Header UserID 
+# Read the CSV file (assuming the column header is UserID)
+$users = Import-Csv -Path $csvFile
 
-# Create empty arrays to store users 
+# Create empty arrays to store users
 $usersNotInGroup = @()
 $usersNotFound = @()
 
 foreach ($user in $users) {
-    try {
-        # Check if the user exists using net user
-        $userCheck = & net user "$($user.UserID)" /domain 2>&1 
+    # Get the UserID value
+    $userID = $user.UserID
 
-        # Check if the user is active (basic check, may not be accurate)
-        if ($userCheck -match "Account disabled") {
-            Write-Warning "The user $($user.UserID) is not active."
-            continue
-        }
+    # Check if the user exists using net user
+    $userCheck = & net user "$userID" /domain 2>&1
 
-        # Check if the specified group is in the net user output
-        if ($userCheck -match $groupName) {
-            Write-Host "User $($user.UserID) is a member of group $groupName."
-        } else {
-            Write-Host "User $($user.UserID) is not a member of group $groupName."
-            $usersNotInGroup += [PSCustomObject]@{
-                UserID = $user.UserID
-                GroupName = $groupName 
-            }
-        }
-    } catch [System.Exception] {
-        Write-Warning "The user name $($user.UserID) could not be found."
+    if ($LASTEXITCODE -ne 0) {
+        # User not found, add to usersNotFound list
+        Write-Warning "The user $userID could not be found."
         $usersNotFound += [PSCustomObject]@{
-            UserID = $user.UserID
+            UserID = $userID
+        }
+    } else {
+        # Check if the specified group is in the net user output
+        if ($userCheck -match "\b$groupName\b") {
+            Write-Host "User $userID is a member of group $groupName."
+        } else {
+            Write-Host "User $userID is not a member of group $groupName."
+            $usersNotInGroup += [PSCustomObject]@{
+                UserID    = $userID
+                GroupName = $groupName
+            }
         }
     }
 }
@@ -41,7 +39,7 @@ foreach ($user in $users) {
 # Export users not in the group to a new CSV file
 if ($usersNotInGroup) {
     $outputFile = "UsersNotInGroup_$groupName.csv"
-    Export-Csv -Path $outputFile -InputObject $usersNotInGroup -NoTypeInformation -Force
+    $usersNotInGroup | Export-Csv -Path $outputFile -NoTypeInformation -Force
     Write-Host "Users not in group $groupName exported to $outputFile."
 } else {
     Write-Host "All users in the CSV file are already members of group $groupName."
@@ -50,14 +48,8 @@ if ($usersNotInGroup) {
 # Export users not found to a new CSV file
 if ($usersNotFound) {
     $outputFile = "UsersNotFound.csv"
-    Export-Csv -Path $outputFile -InputObject $usersNotFound -NoTypeInformation -Force
+    $usersNotFound | Export-Csv -Path $outputFile -NoTypeInformation -Force
     Write-Host "Users not found exported to $outputFile."
 } else {
     Write-Host "All users in the CSV file were found."
 }
-
-This script now includes the following enhancements:
- * Separate array for users not found: A new array, $usersNotFound, is created to store UserIDs that could not be found during the net user check.
- * Exporting users not found: After processing all users, the script exports the $usersNotFound array to a separate CSV file named "UsersNotFound.csv".
- * Informative messages: The script provides messages indicating whether any users were not found.
-This modified script should now fulfill your requirement of outputting a separate CSV file for users that do not exist in Active Directory.
