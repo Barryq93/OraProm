@@ -1,0 +1,47 @@
+# Get input from the user
+$csvFile = Read-Host "Enter the path to the CSV file:"
+$groupName = Read-Host "Enter the group name:"
+
+# Read the CSV file
+$users = Import-Csv -Path $csvFile
+
+# Create an empty array to store users not in the group
+$usersNotInGroup = @()
+
+foreach ($user in $users) {
+    # Check if the user exists using net user
+    $userCheck = & net user "$($user.UserID)" /domain 2>&1 
+    if ($userCheck -match "The user name could not be found.") {
+        Write-Warning "The user name $($user.UserID) could not be found."
+        continue
+    }
+
+    # Check if the user is active (basic check, may not be accurate)
+    if ($userCheck -match "Account disabled") {
+        Write-Warning "The user $($user.UserID) is not active."
+        continue
+    }
+
+    # Get group members using dsquery (requires dsquery.exe in the path)
+    $groupMembers = & dsquery group -name "$groupName" | & dsget group "$groupName" -members | Select-Object -ExpandProperty Member 
+
+    # Check if the user exists in the group
+    if ($groupMembers -contains "$($user.UserID)") {
+        Write-Host "User $($user.UserID) already exists in group $groupName."
+    } else {
+        # Add the user to the array of users not in the group
+        $usersNotInGroup += [PSCustomObject]@{
+            UserID = $user.UserID
+            GroupName = $groupName
+        }
+    }
+}
+
+# Export users not in the group to a new CSV file
+if ($usersNotInGroup) {
+    $outputFile = "UsersNotInGroup_$groupName.csv"
+    Export-Csv -Path $outputFile -InputObject $usersNotInGroup -NoTypeInformation
+    Write-Host "Users not in group $groupName exported to $outputFile."
+} else {
+    Write-Host "All users in the CSV file are already members of group $groupName."
+}
