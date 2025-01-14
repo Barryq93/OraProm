@@ -1,12 +1,11 @@
 # Get input from the user
 $csvFile = Read-Host "Enter the path to the CSV file:"
-$groupName = Read-Host "Enter the group name:"
 
 # Read the CSV file
-$users = Import-Csv -Path $csvFile
+$users = Import-Csv -Path $csvFile -Header UserID 
 
-# Create an empty array to store users not in the group
-$usersNotInGroup = @()
+# Create an empty array to store users and their groups
+$userGroups = @()
 
 foreach ($user in $users) {
     # Check if the user exists using net user
@@ -22,26 +21,38 @@ foreach ($user in $users) {
         continue
     }
 
-    # Get group members using dsquery (requires dsquery.exe in the path)
-    $groupMembers = & dsquery group -name "$groupName" | & dsget group "$groupName" -members | Select-Object -ExpandProperty Member 
+    # Extract group names from net user output
+    $groups = $userCheck -replace ".*Member Of\s*:\s*", "" | 
+             ForEach-Object { $_ -replace " \[.*\]", "" } | 
+             Where-Object { $_ } # Remove empty strings
 
-    # Check if the user exists in the group
-    if ($groupMembers -contains "$($user.UserID)") {
-        Write-Host "User $($user.UserID) already exists in group $groupName."
-    } else {
-        # Add the user to the array of users not in the group
-        $usersNotInGroup += [PSCustomObject]@{
-            UserID = $user.UserID
-            GroupName = $groupName
-        }
+    # Add user and groups to the array
+    $userGroups += [PSCustomObject]@{
+        UserID = $user.UserID
+        Groups = $groups
     }
 }
 
-# Export users not in the group to a new CSV file
-if ($usersNotInGroup) {
-    $outputFile = "UsersNotInGroup_$groupName.csv"
-    Export-Csv -Path $outputFile -InputObject $usersNotInGroup -NoTypeInformation
-    Write-Host "Users not in group $groupName exported to $outputFile."
+# Export user and group information to a new CSV file
+if ($userGroups) {
+    $outputFile = "UserGroups.csv"
+    Export-Csv -Path $outputFile -InputObject $userGroups -NoTypeInformation
+    Write-Host "User and group information exported to $outputFile."
 } else {
-    Write-Host "All users in the CSV file are already members of group $groupName."
+    Write-Host "No users found or processed."
 }
+
+Explanation:
+ * Get input and read CSV: Same as before.
+ * Check user existence and activity: Same as before.
+ * Extract group names:
+   * Use -replace to remove the initial part of the net user output ("Member Of: ").
+   * Use ForEach-Object and -replace to remove the "[*]" part from each group name.
+   * Use Where-Object to remove any empty strings from the array.
+ * Create user-group objects: Create objects containing the UserID and an array of their group memberships.
+ * Export to CSV: Export the $userGroups array to a CSV file.
+Key Improvements:
+ * Extracts all groups: The script now extracts all groups the user belongs to from the net user output.
+ * Cleaner output: The group names are cleaned to remove unnecessary characters.
+ * User-friendly output: The script exports the UserID and their corresponding groups to a CSV file for easy review.
+This refined script provides a more comprehensive solution for extracting and managing user group information using net user and PowerShell.
