@@ -1,55 +1,69 @@
-# Get input from the user
-$csvFile = Read-Host "Enter the path to the CSV file:"
-$groupName = Read-Host "Enter the group name:"
+import asyncio
+import websockets
+import json
+import time
 
-# Read the CSV file (assuming the column header is UserID)
-$users = Import-Csv -Path $csvFile
+async def handle_webhook(websocket, path):
+    """
+    Handles incoming webhook requests.
 
-# Create empty arrays to store users
-$usersNotInGroup = @()
-$usersNotFound = @()
+    Args:
+        websocket: The WebSocket connection object.
+        path: The path of the WebSocket endpoint.
+    """
+    try:
+        async for message in websocket:
+            try:
+                data = json.loads(message)
+                # Process the received data (e.g., log it, store it in a database)
+                timestamp = time.time()
+                print(f"[{timestamp}] Received webhook: {data}")
+                # Example: Store data in a file
+                with open('webhook_log.txt', 'a') as f:
+                    f.write(f"[{timestamp}] {json.dumps(data)}\n")
+            except json.JSONDecodeError:
+                print(f"[{time.time()}] Received invalid JSON: {message}")
+    except websockets.exceptions.ConnectionClosed:
+        print(f"[{time.time()}] Connection closed")
 
-foreach ($user in $users) {
-    # Get the UserID value
-    $userID = $user.UserID
+async def main():
+    """
+    Starts the WebSocket server.
+    """
+    async with websockets.serve(handle_webhook, "localhost", 8765):
+        print("WebSocket server started on ws://localhost:8765")
+        await asyncio.Future()  # Run forever
 
-    # Check if the user exists using net user
-    $userCheck = & net user "$userID" /domain 2>&1
+if __name__ == "__main__":
+    asyncio.run(main())
 
-    if ($LASTEXITCODE -ne 0) {
-        # User not found, add to usersNotFound list
-        Write-Warning "The user $userID could not be found."
-        $usersNotFound += [PSCustomObject]@{
-            UserID = $userID
-        }
-    } else {
-        # Check if the specified group is in the net user output
-        if ($userCheck -match "\b$groupName\b") {
-            Write-Host "User $userID is a member of group $groupName."
-        } else {
-            Write-Host "User $userID is not a member of group $groupName."
-            $usersNotInGroup += [PSCustomObject]@{
-                UserID    = $userID
-                GroupName = $groupName
-            }
-        }
-    }
-}
-
-# Export users not in the group to a new CSV file
-if ($usersNotInGroup) {
-    $outputFile = "UsersNotInGroup_$groupName.csv"
-    $usersNotInGroup | Export-Csv -Path $outputFile -NoTypeInformation -Force
-    Write-Host "Users not in group $groupName exported to $outputFile."
-} else {
-    Write-Host "All users in the CSV file are already members of group $groupName."
-}
-
-# Export users not found to a new CSV file
-if ($usersNotFound) {
-    $outputFile = "UsersNotFound.csv"
-    $usersNotFound | Export-Csv -Path $outputFile -NoTypeInformation -Force
-    Write-Host "Users not found exported to $outputFile."
-} else {
-    Write-Host "All users in the CSV file were found."
-}
+Explanation:
+ * Import necessary libraries:
+   * asyncio: For asynchronous programming in Python.
+   * websockets: For WebSocket communication.
+   * json: For handling JSON data.
+   * time: For getting timestamps.
+ * handle_webhook function:
+   * This function handles incoming webhook requests.
+   * It iterates through received messages using async for.
+   * It attempts to parse the received message as JSON using json.loads().
+   * If successful, it prints the received data and optionally stores it in a file (replace with your desired data handling logic).
+   * It handles potential json.JSONDecodeError if the message is not valid JSON.
+   * It handles websockets.exceptions.ConnectionClosed when the connection is closed.
+ * main function:
+   * This function starts the WebSocket server.
+   * websockets.serve() creates a WebSocket server listening on "localhost" at port 8765.
+   * It calls handle_webhook to handle incoming connections.
+   * asyncio.Future() makes the server run indefinitely.
+ * Run the script:
+   * asyncio.run(main()) starts the asynchronous event loop and runs the main function.
+To use this script:
+ * Save the code as a Python file (e.g., webhook_server.py).
+ * Run the script from your terminal: python webhook_server.py
+ * Send webhook requests to ws://localhost:8765 using your preferred method (e.g., using a library like requests in Python).
+This script provides a basic framework for receiving and logging webhook data. You can customize it further to:
+ * Store data in a database (e.g., using libraries like SQLAlchemy or MongoDB).
+ * Perform specific actions based on the webhook data (e.g., trigger other processes, send notifications).
+ * Implement authentication and authorization mechanisms.
+ * Handle different types of webhooks and their specific data structures.
+Remember to replace "localhost" and 8765 with the desired host and port for your server.
