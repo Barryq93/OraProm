@@ -1,5 +1,55 @@
-       CASE 
-           WHEN INSTR(filename, '.') > 0 
-           THEN SUBSTR(filename, 1, INSTR(filename, '.') - 1) || '.pdf' 
-           ELSE filename || '.pdf' 
-       END
+# Function to generate SQL INSERT statement
+function Generate-SqlInsert($SourcePath, $ID, $StaffID, $DocumentType, $BatchNumber) {
+    # Remove "Documents/ID/" from SourcePath
+    $CleanedSourcePath = $SourcePath -replace "Documents/ID/", ""
+
+    # Format ID to 7 characters with leading zeros
+    $FormattedID = "{0:D7}" -f $ID
+
+    # Construct SQL INSERT statement
+    $SqlStatement = "INSERT INTO YourTable (BatchNumber, SourcePath, ID, StaffID, DocumentType) VALUES ('{0}', '{1}', '{2}', '{3}', '{4}');" -f $BatchNumber, $CleanedSourcePath, $FormattedID, $StaffID, $DocumentType
+
+    return $SqlStatement
+}
+
+# Get the path to the Excel files from the user
+$ExcelFolderPath = Read-Host -Prompt "Enter the path to the Excel files:"
+
+# Initialize an empty array to store SQL statements
+$SqlStatements = @()
+
+# Loop through Excel files from batch1.xlsx to batch47.xlsx
+for ($i = 1; $i -le 47; $i++) {
+    # Construct Excel file path
+    $ExcelFilePath = Join-Path -Path $ExcelFolderPath -ChildPath ("batch{0}.xlsx" -f $i)
+
+    # Check if the Excel file exists
+    if (Test-Path -Path $ExcelFilePath) {
+        # Import data from Excel file (adjust SheetName and Range as needed)
+        $ExcelData = Import-Excel -Path $ExcelFilePath -SheetName "Sheet1" -Range "A1:E100" 
+
+        # Iterate through each row in the Excel data
+        foreach ($row in $ExcelData) {
+            # Extract values from row
+            $SourcePath = $row.SourcePath
+            $ID = $row.ID
+            $StaffID = $row.StaffID
+            $DocumentType = $row.DocumentType
+
+            # Generate SQL INSERT statement
+            $SqlStatement = Generate-SqlInsert $SourcePath $ID $StaffID $DocumentType $i
+
+            # Add SQL statement to the array
+            $SqlStatements += $SqlStatement
+        }
+    }
+}
+
+# Create a file to store the SQL statements
+$OutputFilePath = "output.sql"
+
+# Write SQL statements to the file
+$SqlStatements | Set-Content -Path $OutputFilePath
+
+# Confirm successful script execution
+Write-Host "SQL statements written to: $OutputFilePath"
