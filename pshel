@@ -46,6 +46,11 @@ for ($i = 1; $i -le 47; $i++) {
             $StaffID = $worksheet.Cells.Item($row, 3).Value2 
             $DocumentType = $worksheet.Cells.Item($row, 4).Value2 
 
+             # Skip rows where StaffID (column 3) is blank
+            if ([string]::IsNullOrWhiteSpace($StaffID)) {
+                continue
+            }
+
             # Generate SQL INSERT statement
             $SqlStatement = Generate-SqlInsert $SourcePath $ID $StaffID $DocumentType $i
 
