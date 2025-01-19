@@ -51,6 +51,8 @@ for ($i = 1; $i -le 47; $i++) {
                 continue
             }
 
+            $CleanedSourcePath = $SourcePath -replace "Documents/ID/", "Documents/$ID/" 
+
             # Generate SQL INSERT statement
             $SqlStatement = Generate-SqlInsert $SourcePath $ID $StaffID $DocumentType $i
 
