@@ -1,13 +1,54 @@
+<#
+.SYNOPSIS
+This script reads data from multiple Excel files (batch1.xlsx to batch47.xlsx), 
+extracts specific columns, and generates SQL INSERT statements.
+
+.DESCRIPTION
+This script iterates through a series of Excel files, extracts data from specified columns,
+and generates SQL INSERT statements based on the extracted data. 
+It includes features such as:
+- Reading data from Excel files using COM objects.
+- Handling blank values in the StaffID column.
+- Replacing "Documents/ID/" in the SourcePath with the actual ID.
+
+.PARAMETER ExcelFolderPath
+Specifies the path to the directory containing the Excel files.
+
+.EXAMPLE
+.\process_excel_data.ps1 -ExcelFolderPath "C:\path\to\excel\files"
+
+.NOTES
+- This script requires Excel to be installed on the system.
+- Adjust the following parameters as needed:
+    - `$i -le 47`: Change the upper limit of the loop to match the number of batch files.
+    - `$worksheet.Sheets.Item(1)`: Change the sheet index if the data is in a different sheet.
+    - `$SourcePath = $worksheet.Cells.Item($row, 1).Value2`: 
+        - Adjust the column indices (e.g., $row, 1) based on the actual column positions of the data in your Excel files.
+    - `$ID = $worksheet.Cells.Item($row, 2).Value2`: 
+        - Adjust the column indices for each variable (`ID`, `StaffID`, `DocumentType`).
+    - `$StaffID = $worksheet.Cells.Item($row, 3).Value2`: 
+        - Adjust the column indices accordingly.
+    - `$DocumentType = $worksheet.Cells.Item($row, 4).Value2`: 
+        - Adjust the column indices accordingly.
+    - `$SqlStatement = "INSERT INTO YourTable (BatchNumber, SourcePath, ID, StaffID, DocumentType) VALUES ('{0}', '{1}', '{2}', '{3}', '{4}');"`:
+        - Change "YourTable" to the actual name of your database table.
+        - Add or remove columns in the SQL statement and corresponding placeholders (`{0}`, `{1}`, etc.) to match the desired columns.
+        - Adjust the order of the placeholders to match the order of values in the `$SqlStatement = Generate-SqlInsert ...` function.
+
+- To use different column names in your Excel file, adjust the column indices in the data extraction lines and update the `Generate-SqlInsert` function accordingly.
+
+- To handle different data formats or perform additional data transformations, modify the script logic within the loops.
+
+- This script assumes that the Excel files are in the same directory as the script. If not, adjust the `$ExcelFilePath` accordingly.
+#>
+
 # Function to generate SQL INSERT statement
 function Generate-SqlInsert($SourcePath, $ID, $StaffID, $DocumentType, $BatchNumber) {
     # Remove "Documents/ID/" from SourcePath
-    $CleanedSourcePath = $SourcePath -replace "Documents/ID/", ""
-
-    # Format ID to 7 characters with leading zeros
-    $FormattedID = "{0:D7}" -f $ID
+    $CleanedSourcePath = $SourcePath -replace "Documents/$ID/", ""
 
     # Construct SQL INSERT statement
-    $SqlStatement = "INSERT INTO YourTable (BatchNumber, SourcePath, ID, StaffID, DocumentType) VALUES ('{0}', '{1}', '{2}', '{3}', '{4}');" -f $BatchNumber, $CleanedSourcePath, $FormattedID, $StaffID, $DocumentType
+    $SqlStatement = "INSERT INTO YourTable (BatchNumber, SourcePath, ID, StaffID, DocumentType) VALUES ('{0}', '{1}', '{2}', '{3}', '{4}');" -f $BatchNumber, $CleanedSourcePath, $ID, $StaffID, $DocumentType
 
     return $SqlStatement
 }
@@ -46,12 +87,10 @@ for ($i = 1; $i -le 47; $i++) {
             $StaffID = $worksheet.Cells.Item($row, 3).Value2 
             $DocumentType = $worksheet.Cells.Item($row, 4).Value2 
 
-             # Skip rows where StaffID (column 3) is blank
+            # Skip rows where StaffID (column 3) is blank
             if ([string]::IsNullOrWhiteSpace($StaffID)) {
                 continue
             }
-
-            $CleanedSourcePath = $SourcePath -replace "Documents/ID/", "Documents/$ID/" 
 
             # Generate SQL INSERT statement
             $SqlStatement = Generate-SqlInsert $SourcePath $ID $StaffID $DocumentType $i
