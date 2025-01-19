@@ -1,5 +1,1 @@
-cat *.csv | awk -F, 'BEGIN { FS=","; OFS="," } { 
-    if ($2 != "") { 
-        print "UPDATE table SET id='" $9 "', status='complete' WHERE filename='" $2 "'"; 
-    } 
-}' > update.sql
+cat *.csv | sed -E 's/^([^,]*),([^,]*),(.*),\([^,]*\),\([^,]*\),\([^,]*\),\([^,]*\),\([^,]*\),\([^,]*\)/UPDATE table SET id=\'\9\', status=\'complete\' WHERE filename=\'\2\';/g' > update.sql
