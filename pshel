@@ -1,55 +1,64 @@
-# Percentage of 500 errors in 3-hour window from 10:15 to 7:15, occurring 5 hours ago
+# Percentage of each status code by instance and application
 (
-  sum(
-    rate(
-      http_server_requests_seconds_count{
-        job="spring-boot",
-        status="500"
-      }[5m] @ (time() - 5h - 10h15m)
-    )
+  sum by (application, instance, status) (
+    rate(http_server_requests_seconds_count{job="eureka-discovery"}[5m])
   )
   /
-  sum(
-    rate(
-      http_server_requests_seconds_count{
-        job="spring-boot"
-      }[5m] @ (time() - 5h - 10h15m)
-    )
+  sum by (application, instance) (
+    rate(http_server_requests_seconds_count{job="eureka-discovery"}[5m])
   )
 ) * 100
 
-# To get the full range with offset subquery
+# Same query with status codes grouped into categories
 (
-  sum(
+  sum by (application, instance, status_category) (
     rate(
-      http_server_requests_seconds_count{
-        job="spring-boot",
-        status="500"
-      }[5m] @ time() - 5h
-    )[3h:5m]
+      http_server_requests_seconds_count{job="eureka-discovery"}[5m]
+    ) * on(status) group_left(status_category)
+    (
+      label_replace(
+        {__name__="status_mapping"},
+        "status_category",
+        "2xx",
+        "status",
+        "2.."
+      ) or
+      label_replace(
+        {__name__="status_mapping"},
+        "status_category",
+        "3xx",
+        "status",
+        "3.."
+      ) or
+      label_replace(
+        {__name__="status_mapping"},
+        "status_category",
+        "4xx",
+        "status",
+        "4.."
+      ) or
+      label_replace(
+        {__name__="status_mapping"},
+        "status_category",
+        "5xx",
+        "status",
+        "5.."
+      )
+    )
   )
   /
-  sum(
-    rate(
-      http_server_requests_seconds_count{
-        job="spring-boot"
-      }[5m] @ time() - 5h
-    )[3h:5m]
+  sum by (application, instance) (
+    rate(http_server_requests_seconds_count{job="eureka-discovery"}[5m])
   )
-) * 100</antArtifact>
+) * 100
 
-I've provided two approaches:
-
-1. The first query gets a snapshot at exactly 10:15 (5 hours ago)
-   - Uses `time()` to get current timestamp
-   - Subtracts 5h for the "5 hours ago" offset
-   - Subtracts 10h15m to get to 10:15
-
-2. The second query uses a subquery to get the full 3-hour range
-   - `[3h:5m]` means "look back 3 hours, with 5-minute steps"
-   - This gives you the error rate over the entire period from 7:15 to 10:15
-   - More useful for graphing or getting an average over the time window
-
-The second query is generally more useful as it gives you the complete picture over the time window rather than just a single point in time.
-
-Would you like me to modify either query to include additional metrics or adjust the time windows?
+# With specific endpoints included
+(
+  sum by (application, instance, status, uri) (
+    rate(http_server_requests_seconds_count{job="eureka-discovery"}[5m])
+  )
+  /
+  sum by (application, instance, uri) (
+    rate(http_server_requests_seconds_count{job="eureka-discovery"}[5m])
+  )
+) * 100
