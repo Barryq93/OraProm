@@ -1,64 +1,33 @@
-# Percentage of each status code by instance and application
-(
-  sum by (application, instance, status) (
-    rate(http_server_requests_seconds_count{job="eureka-discovery"}[5m])
-  )
-  /
-  sum by (application, instance) (
-    rate(http_server_requests_seconds_count{job="eureka-discovery"}[5m])
-  )
-) * 100
+#!/bin/bash
+set -e
 
-# Same query with status codes grouped into categories
-(
-  sum by (application, instance, status_category) (
-    rate(
-      http_server_requests_seconds_count{job="eureka-discovery"}[5m]
-    ) * on(status) group_left(status_category)
-    (
-      label_replace(
-        {__name__="status_mapping"},
-        "status_category",
-        "2xx",
-        "status",
-        "2.."
-      ) or
-      label_replace(
-        {__name__="status_mapping"},
-        "status_category",
-        "3xx",
-        "status",
-        "3.."
-      ) or
-      label_replace(
-        {__name__="status_mapping"},
-        "status_category",
-        "4xx",
-        "status",
-        "4.."
-      ) or
-      label_replace(
-        {__name__="status_mapping"},
-        "status_category",
-        "5xx",
-        "status",
-        "5.."
-      )
-    )
-  )
-  /
-  sum by (application, instance) (
-    rate(http_server_requests_seconds_count{job="eureka-discovery"}[5m])
-  )
-) * 100
+# Source DB2 environment
+. /home/db2inst1/sqllib/db2profile
 
-# With specific endpoints included
-(
-  sum by (application, instance, status, uri) (
-    rate(http_server_requests_seconds_count{job="eureka-discovery"}[5m])
-  )
-  /
-  sum by (application, instance, uri) (
-    rate(http_server_requests_seconds_count{job="eureka-discovery"}[5m])
-  )
-) * 100
+# List of databases
+DATABASES=("db1" "db2" "db3" "db4" "db5" "db6" "db7")
+
+# Step 1: Start DB2 instance
+echo "Starting DB2..."
+db2start
+
+# Step 2: Start HADR for each database
+for DB_NAME in "${DATABASES[@]}"; do
+    echo "Starting HADR for database: $DB_NAME"
+    db2 connect to $DB_NAME
+
+    # Check current role
+    role=$(db2pd -hadr -db $DB_NAME | grep -i "Role:" | awk '{print $2}')
+
+    if [[ "$role" == "STANDBY" ]]; then
+        db2 "START HADR ON DATABASE $DB_NAME AS STANDBY"
+        echo "HADR started as STANDBY for $DB_NAME."
+    elif [[ "$role" == "PRIMARY" ]]; then
+        db2 "START HADR ON DATABASE $DB_NAME AS PRIMARY"
+        echo "HADR started as PRIMARY for $DB_NAME."
+    else
+        echo "Warning: HADR role undefined for $DB_NAME. Skipping..."
+    fi
+done
+
+echo "Startup complete. All databases are running with HADR."
