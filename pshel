@@ -7,9 +7,9 @@ checkHADR() {
     
     # Check if the instance is primary
     if [[ "$HADR_STATUS" == "Primary" ]]; then
-        return 0  # true
+        return 0  # true (Primary)
     else
-        return 1  # false
+        return 1  # false (Standby)
     fi
 }
 
@@ -22,9 +22,9 @@ startDB2() {
     if checkHADR; then
         echo "HADR status: Primary"
         
-        # Node-specific actions for node1
-        if [[ "$(hostname)" == "node1" ]]; then
-            echo "Executing takeoverHADR.sh on node1..."
+        # Node-specific actions for node1 (alvp)
+        if [[ "$(hostname)" == *"alvp"* ]]; then
+            echo "Current node is node1 (alvp). Executing takeoverHADR.sh..."
             ./takeoverHADR.sh
         fi
     else
@@ -32,10 +32,10 @@ startDB2() {
     fi
     
     # Secondary actions
-    echo "Stopping db2ts on node2..."
-    ssh node2 ./db2ts_stop.sh
+    echo "Stopping db2ts on node2 (omvp)..."
+    ssh omvp ./db2ts_stop.sh
     
-    echo "Executing DB2Token.sh on node1..."
+    echo "Executing DB2Token.sh on node1 (alvp)..."
     ./DB2Token.sh
 }
 
@@ -45,9 +45,9 @@ stopDB2() {
     if checkHADR; then
         echo "HADR status: Primary"
         
-        # Execute takeoverHADR.sh on node2
-        echo "Executing takeoverHADR.sh on node2..."
-        ssh node2 ./takeoverHADR.sh
+        # Execute takeoverHADR.sh on node2 (omvp)
+        echo "Executing takeoverHADR.sh on node2 (omvp)..."
+        ssh omvp ./takeoverHADR.sh
         
         # Shutdown DB2 on current node
         echo "Shutting down DB2 on current node..."
@@ -64,8 +64,8 @@ stopDB2() {
     echo "Stopping db2ts on current node..."
     ./db2ts_stop.sh
     
-    echo "Executing DB2Token.sh on node2..."
-    ssh node2 ./DB2Token.sh
+    echo "Executing DB2Token.sh on node2 (omvp)..."
+    ssh omvp ./DB2Token.sh
 }
 
 # Main script logic
