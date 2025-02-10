@@ -1,30 +1,7 @@
-$prometheusPath = "D:\Monitoring\Prometheus\prometheus.exe"  # Path to Prometheus
-$prometheusConfig = '--config.file="D:\Monitoring\Prometheus\prometheus.yml"' # Corrected argument syntax
-$prometheusDataDir = "D:\Monitoring\Prometheus\data" # Data directory
-$prometheusLogDir = "D:\Monitoring\Prometheus\logs" # Log directory
+$serviceName = "Prometheus"
+$exePath = "D:\Monitoring\Prometheus\prometheus.exe"
+$configFile = "D:\Monitoring\Prometheus\prometheus.yml"
+$dataDir = "D:\Monitoring\Prometheus\data"
+$binPath = "`"$exePath`" --config.file=`"$configFile`" --storage.tsdb.path=`"$dataDir`""
 
-# Ensure required directories exist
-foreach ($dir in @($prometheusDataDir, $prometheusLogDir)) {
-    if (!(Test-Path $dir)) {
-        New-Item -ItemType Directory -Path $dir | Out-Null
-    }
-}
-
-# Remove existing service if it exists
-if (Get-Service -Name "Prometheus" -ErrorAction SilentlyContinue) {
-    Stop-Service -Name "Prometheus" -Force
-    sc.exe delete Prometheus
-    Start-Sleep -Seconds 3  # Wait for deletion to complete
-}
-
-# Properly define the binary path including arguments
-$binaryPath = "`"$prometheusPath`" $prometheusConfig"
-
-# Create the service with arguments
-New-Service -Name "Prometheus" -BinaryPathName $binaryPath -StartupType Automatic -Description "Prometheus Monitoring Service"
-
-# Start the service
-Start-Service -Name "Prometheus"
-
-# Verify service status
-Get-Service -Name "Prometheus"
+sc.exe create $serviceName binPath= $binPath start= auto
