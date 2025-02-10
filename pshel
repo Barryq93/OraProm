@@ -1,7 +1,16 @@
-$serviceName = "Prometheus"
-$exePath = "D:\Monitoring\Prometheus\prometheus.exe"
+# Define the Prometheus executable and config file locations
+$prometheusExe = "D:\Monitoring\Prometheus\prometheus.exe"
 $configFile = "D:\Monitoring\Prometheus\prometheus.yml"
 $dataDir = "D:\Monitoring\Prometheus\data"
-$binPath = "`"$exePath`" --config.file=`"$configFile`" --storage.tsdb.path=`"$dataDir`""
 
-sc.exe create $serviceName binPath= $binPath start= auto
+# Define the log file location
+$logFile = "D:\Monitoring\Prometheus\prometheus.log"
+
+# Prepare the command to start Prometheus with necessary arguments
+$command = "$prometheusExe --config.file=$configFile --storage.tsdb.path=$dataDir"
+
+# Start Prometheus and redirect both standard output and error to a log file
+Start-Process -FilePath $prometheusExe -ArgumentList "--config.file=$configFile --storage.tsdb.path=$dataDir" -NoNewWindow -RedirectStandardOutput $logFile -RedirectStandardError $logFile -Wait
+
+# Optionally, you can display output in PowerShell (for manual testing)
+Write-Host "Prometheus started. Logs are being written to $logFile"
