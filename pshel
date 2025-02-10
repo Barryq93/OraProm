@@ -1,26 +1,30 @@
-$prometheusPath = "D:\Monitoring\Prometheus\prometheus.exe"  # Path to your prometheus.exe
-$prometheusConfig = "--config.file='D:\Monitoring\Prometheus\prometheus.yml'" # Prometheus arguments
-$prometheusDataDir = "D:\Monitoring\Prometheus\data" # Prometheus data directory
-$prometheusLogDir = "D:\Monitoring\Prometheus\logs" # Prometheus log directory
+$prometheusPath = "D:\Monitoring\Prometheus\prometheus.exe"  # Path to Prometheus
+$prometheusConfig = '--config.file="D:\Monitoring\Prometheus\prometheus.yml"' # Corrected argument syntax
+$prometheusDataDir = "D:\Monitoring\Prometheus\data" # Data directory
+$prometheusLogDir = "D:\Monitoring\Prometheus\logs" # Log directory
 
-# Create the service (without arguments initially)
-New-Service -Name "Prometheus" -BinaryPath $prometheusPath -StartupType Automatic -Description "Prometheus Monitoring Service"
-
-# Set the arguments and working directory (this is the crucial part)
-$service = Get-Service -Name "Prometheus"
-
-# Create directories if they do not exist
-if (!(Test-Path $prometheusDataDir)) {
-    New-Item -ItemType Directory -Path $prometheusDataDir | Out-Null
+# Ensure required directories exist
+foreach ($dir in @($prometheusDataDir, $prometheusLogDir)) {
+    if (!(Test-Path $dir)) {
+        New-Item -ItemType Directory -Path $dir | Out-Null
+    }
 }
 
-if (!(Test-Path $prometheusLogDir)) {
-    New-Item -ItemType Directory -Path $prometheusLogDir | Out-Null
+# Remove existing service if it exists
+if (Get-Service -Name "Prometheus" -ErrorAction SilentlyContinue) {
+    Stop-Service -Name "Prometheus" -Force
+    sc.exe delete Prometheus
+    Start-Sleep -Seconds 3  # Wait for deletion to complete
 }
 
-$process = Start-Process -FilePath $prometheusPath -ArgumentList $prometheusConfig -WorkingDirectory "D:\Monitoring\Prometheus" -PassThru # -PassThru is important!
+# Properly define the binary path including arguments
+$binaryPath = "`"$prometheusPath`" $prometheusConfig"
 
-# You can use the $process object if needed for further management.
+# Create the service with arguments
+New-Service -Name "Prometheus" -BinaryPathName $binaryPath -StartupType Automatic -Description "Prometheus Monitoring Service"
 
-# Optional: Set service description
-Set-Service -Name "Prometheus" -Description "Prometheus Monitoring Service"
+# Start the service
+Start-Service -Name "Prometheus"
+
+# Verify service status
+Get-Service -Name "Prometheus"
