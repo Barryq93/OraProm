@@ -1,157 +1,123 @@
-Here's a complete YAML file containing all the alerts I mentioned. Save this as node_exporter_alerts.yml and load it into Prometheus Alertmanager.
-
 groups:
-  - name: node-exporter-alerts
+  - name: websphere-alerts
     rules:
-      # CPU Alerts
-      - alert: High_CPU_Usage
-        expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 90
+      # JVM Alerts
+      - alert: WebSphere_JVM_High_Heap_Usage
+        expr: (was_jvm_runtime_heap_used_bytes / was_jvm_runtime_heap_max_bytes) * 100 > 80
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "High CPU Usage on {{ $labels.instance }}"
-          description: "CPU usage is above 90% for the last 5 minutes."
+          summary: "High JVM Heap Usage on {{ $labels.instance }}"
+          description: "JVM Heap is above 80% usage."
 
-      - alert: High_Load_Avg
-        expr: node_load1 > (count(node_cpu_seconds_total{mode="user"}) * 1.5)
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High Load Average on {{ $labels.instance }}"
-          description: "Load average is too high (above 1.5x the number of cores)."
-
-      # Memory Alerts
-      - alert: Low_Memory
-        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 < 10
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Low Memory on {{ $labels.instance }}"
-          description: "Available memory is below 10%."
-
-      - alert: High_Swap_Usage
-        expr: (node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes) / node_memory_SwapTotal_bytes * 100 > 50
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High Swap Usage on {{ $labels.instance }}"
-          description: "Swap usage is above 50%, which may indicate memory pressure."
-
-      # Disk Alerts
-      - alert: Low_Disk_Space
-        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) * 100 < 10
-        for: 10m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Low Disk Space on {{ $labels.instance }}"
-          description: "Disk space is below 10% on {{ $labels.mountpoint }}."
-
-      - alert: High_Disk_IO_Wait
-        expr: avg by (instance) (rate(node_cpu_seconds_total{mode="iowait"}[5m])) * 100 > 20
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High Disk IO Wait on {{ $labels.instance }}"
-          description: "Disk IO wait is above 20%, indicating slow disk performance."
-
-      # Network Alerts
-      - alert: High_Network_Usage
-        expr: rate(node_network_receive_bytes_total[5m]) + rate(node_network_transmit_bytes_total[5m]) > 1000000000
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High Network Usage on {{ $labels.instance }}"
-          description: "Network usage is above 1Gbps for the last 5 minutes."
-
-      - alert: Network_Interface_Down
-        expr: node_network_up == 0
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Network Interface Down on {{ $labels.instance }}"
-          description: "One or more network interfaces are down."
-
-      # System Health Alerts
-      - alert: Host_Down
-        expr: up == 0
+      - alert: WebSphere_JVM_Near_OutOfMemory
+        expr: (was_jvm_runtime_heap_used_bytes / was_jvm_runtime_heap_max_bytes) * 100 > 95
         for: 2m
         labels:
           severity: critical
         annotations:
-          summary: "Host Down: {{ $labels.instance }}"
-          description: "The host {{ $labels.instance }} has been unreachable for more than 2 minutes."
+          summary: "JVM Out of Memory Risk on {{ $labels.instance }}"
+          description: "JVM Heap is above 95%! Possible OutOfMemory risk."
 
-      - alert: Host_Rebooted
-        expr: time() - node_boot_time_seconds < 300
+      - alert: WebSphere_High_CPU
+        expr: rate(was_jvm_runtime_process_cpu_usage[5m]) * 100 > 90
         for: 5m
         labels:
-          severity: info
+          severity: warning
         annotations:
-          summary: "Host Rebooted: {{ $labels.instance }}"
-          description: "The system {{ $labels.instance }} has rebooted within the last 5 minutes."
+          summary: "High CPU Usage on WebSphere {{ $labels.instance }}"
+          description: "CPU usage is above 90% for the last 5 minutes."
 
-      # NFS Alerts
-      - alert: NFS_Mount_Missing
-        expr: node_filesystem_avail_bytes{fstype="nfs"} == 0
+      - alert: WebSphere_High_GC_Time
+        expr: rate(was_jvm_runtime_gc_time_seconds_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High JVM GC Time on {{ $labels.instance }}"
+          description: "Garbage Collection is taking more than 1 second per second."
+
+      - alert: WebSphere_Process_Down
+        expr: was_jvm_runtime_uptime_seconds == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "WebSphere Instance Down on {{ $labels.instance }}"
+          description: "WebSphere JVM process has been down for more than 2 minutes."
+
+      # HTTP Request & Web Endpoint Alerts
+      - alert: WebSphere_High_Response_Time
+        expr: histogram_quantile(0.95, rate(was_servlet_response_time_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Response Time on WebSphere {{ $labels.instance }}"
+          description: "95th percentile response time > 2s."
+
+      - alert: WebSphere_High_5xx_Errors
+        expr: rate(was_servlet_request_count_total{status=~"5.."}[5m]) > 10
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "NFS Mount Missing on {{ $labels.instance }}"
-          description: "The NFS mount at {{ $labels.mountpoint }} on {{ $labels.instance }} is missing or unavailable."
+          summary: "High 5xx Errors on WebSphere {{ $labels.instance }}"
+          description: "More than 10 HTTP 5xx errors per second."
 
-      - alert: NFS_Almost_Full
-        expr: (node_filesystem_avail_bytes{fstype="nfs"} / node_filesystem_size_bytes{fstype="nfs"}) * 100 < 10
+      - alert: WebSphere_Low_Traffic
+        expr: rate(was_servlet_request_count_total[5m]) < 1
         for: 10m
-        labels:
-          severity: warning
-        annotations:
-          summary: "NFS Disk Space Low on {{ $labels.instance }}"
-          description: "NFS mount {{ $labels.mountpoint }} has less than 10% free space left."
-
-      # Service Alerts
-      - alert: App_Service_Down
-        expr: node_systemd_unit_state{state="active", name=~"app_.*"} == 0
-        for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "App Service Down on {{ $labels.instance }}"
-          description: "The systemd service {{ $labels.name }} on {{ $labels.instance }} is not running."
+          summary: "Low Traffic on WebSphere {{ $labels.instance }}"
+          description: "Less than 1 request per second, potential downtime."
 
-      - alert: App_Service_Flapping
-        expr: changes(node_systemd_unit_state{name=~"app_.*", state="active"}[10m]) > 5
-        for: 10m
+      - alert: WebSphere_High_Active_Sessions
+        expr: was_session_active_count > 1000
+        for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "App Service Flapping on {{ $labels.instance }}"
-          description: "The service {{ $labels.name }} has restarted more than 5 times in the last 10 minutes."
+          summary: "High Active Sessions on WebSphere {{ $labels.instance }}"
+          description: "More than 1000 active sessions detected."
 
-How to Use This File
+      # JDBC Connection Pool Alerts
+      - alert: WebSphere_High_JDBC_Connection_Usage
+        expr: (was_jdbc_pool_used_connections / was_jdbc_pool_max_connections) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High JDBC Connection Usage on {{ $labels.instance }}"
+          description: "More than 80% of JDBC connection pool in use."
 
-1. Save it as node_exporter_alerts.yml on your Prometheus server.
+      - alert: WebSphere_JDBC_Connection_Exhausted
+        expr: (was_jdbc_pool_used_connections / was_jdbc_pool_max_connections) * 100 > 95
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "JDBC Connection Pool Exhausted on {{ $labels.instance }}"
+          description: "More than 95% of JDBC connection pool in use!"
 
+      # Thread Pool Alerts
+      - alert: WebSphere_High_Thread_Pool_Usage
+        expr: (was_threadpool_active_threads / was_threadpool_max_threads) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Thread Pool Usage on WebSphere {{ $labels.instance }}"
+          description: "More than 80% of the thread pool is in use."
 
-2. Add the rule file reference in prometheus.yml:
-
-rule_files:
-  - "node_exporter_alerts.yml"
-
-
-3. Restart Prometheus:
-
-systemctl restart prometheus
-
-
-
-This will enable all the alerts for CPU, Memory, Disk, Network, NFS, and Services. Let me know if you need any changes!
-
+      - alert: WebSphere_Thread_Pool_Exhausted
+        expr: (was_threadpool_active_threads / was_threadpool_max_threads) * 100 > 95
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Thread Pool Exhausted on WebSphere {{ $labels.instance }}"
+          description: "More than 95% of the thread pool is in use! Requests may be blocked."
