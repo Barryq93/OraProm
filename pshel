@@ -1,123 +1,98 @@
 groups:
-  - name: websphere-alerts
+  - name: websphere_alerts
+    interval: 30s
     rules:
-      # JVM Alerts
+      # JVM Performance Alerts
       - alert: WebSphere_JVM_High_Heap_Usage
-        expr: (was_jvm_runtime_heap_used_bytes / was_jvm_runtime_heap_max_bytes) * 100 > 80
+        expr: (jvm_memory_used_bytes / jvm_memory_max_bytes) * 100 > 80
         for: 5m
         labels:
           severity: warning
         annotations:
           summary: "High JVM Heap Usage on {{ $labels.instance }}"
-          description: "JVM Heap is above 80% usage."
+          description: "JVM heap usage has exceeded 80% on instance {{ $labels.instance }}."
 
-      - alert: WebSphere_JVM_Near_OutOfMemory
-        expr: (was_jvm_runtime_heap_used_bytes / was_jvm_runtime_heap_max_bytes) * 100 > 95
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "JVM Out of Memory Risk on {{ $labels.instance }}"
-          description: "JVM Heap is above 95%! Possible OutOfMemory risk."
-
-      - alert: WebSphere_High_CPU
-        expr: rate(was_jvm_runtime_process_cpu_usage[5m]) * 100 > 90
+      - alert: WebSphere_JVM_High_GC_Duration
+        expr: rate(jvm_gc_duration_seconds_total[5m]) > 1
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "High CPU Usage on WebSphere {{ $labels.instance }}"
-          description: "CPU usage is above 90% for the last 5 minutes."
+          summary: "Elevated Garbage Collection Duration on {{ $labels.instance }}"
+          description: "Garbage collection is taking more than 1 second per second on instance {{ $labels.instance }}."
 
-      - alert: WebSphere_High_GC_Time
-        expr: rate(was_jvm_runtime_gc_time_seconds_total[5m]) > 1
+      # Thread Pool Monitoring
+      - alert: WebSphere_ThreadPool_High_Utilization
+        expr: (was_threadpool_active_threads / was_threadpool_size) * 100 > 80
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "High JVM GC Time on {{ $labels.instance }}"
-          description: "Garbage Collection is taking more than 1 second per second."
+          summary: "High Thread Pool Utilization on {{ $labels.instance }}"
+          description: "Thread pool utilization has exceeded 80% on instance {{ $labels.instance }}."
 
-      - alert: WebSphere_Process_Down
-        expr: was_jvm_runtime_uptime_seconds == 0
-        for: 2m
+      - alert: WebSphere_ThreadPool_Saturation
+        expr: was_threadpool_active_threads == was_threadpool_size
+        for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "WebSphere Instance Down on {{ $labels.instance }}"
-          description: "WebSphere JVM process has been down for more than 2 minutes."
+          summary: "Thread Pool Saturation on {{ $labels.instance }}"
+          description: "Thread pool is fully utilized on instance {{ $labels.instance }}."
 
-      # HTTP Request & Web Endpoint Alerts
-      - alert: WebSphere_High_Response_Time
-        expr: histogram_quantile(0.95, rate(was_servlet_response_time_seconds_bucket[5m])) > 2
+      # Connection Pool Monitoring
+      - alert: WebSphere_ConnectionPool_High_Utilization
+        expr: (was_connectionpool_size - was_connectionpool_free_connections) / was_connectionpool_size * 100 > 80
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "High Response Time on WebSphere {{ $labels.instance }}"
-          description: "95th percentile response time > 2s."
+          summary: "High Connection Pool Utilization on {{ $labels.instance }}"
+          description: "Connection pool utilization has exceeded 80% on instance {{ $labels.instance }}."
 
-      - alert: WebSphere_High_5xx_Errors
-        expr: rate(was_servlet_request_count_total{status=~"5.."}[5m]) > 10
+      - alert: WebSphere_ConnectionPool_Exhaustion
+        expr: was_connectionpool_free_connections == 0
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "High 5xx Errors on WebSphere {{ $labels.instance }}"
-          description: "More than 10 HTTP 5xx errors per second."
+          summary: "Connection Pool Exhaustion on {{ $labels.instance }}"
+          description: "No free connections available in the pool on instance {{ $labels.instance }}."
 
-      - alert: WebSphere_Low_Traffic
-        expr: rate(was_servlet_request_count_total[5m]) < 1
-        for: 10m
+      # Servlet Performance Monitoring
+      - alert: WebSphere_Servlet_High_Response_Time
+        expr: rate(was_servlet_response_time_seconds_total[5m]) / rate(was_servlet_requests_total[5m]) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Servlet Response Time on {{ $labels.instance }}"
+          description: "Average servlet response time exceeds 2 seconds on instance {{ $labels.instance }}."
+
+      - alert: WebSphere_Servlet_High_Error_Rate
+        expr: rate(was_servlet_errors_total[5m]) / rate(was_servlet_requests_total[5m]) > 0.05
+        for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "Low Traffic on WebSphere {{ $labels.instance }}"
-          description: "Less than 1 request per second, potential downtime."
+          summary: "High Servlet Error Rate on {{ $labels.instance }}"
+          description: "Error rate exceeds 5% of total requests on instance {{ $labels.instance }}."
 
+      # Session Management Monitoring
       - alert: WebSphere_High_Active_Sessions
-        expr: was_session_active_count > 1000
+        expr: was_session_active_sessions > 1000
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "High Active Sessions on WebSphere {{ $labels.instance }}"
-          description: "More than 1000 active sessions detected."
+          summary: "High Active Session Count on {{ $labels.instance }}"
+          description: "Active sessions have exceeded 1000 on instance {{ $labels.instance }}."
 
-      # JDBC Connection Pool Alerts
-      - alert: WebSphere_High_JDBC_Connection_Usage
-        expr: (was_jdbc_pool_used_connections / was_jdbc_pool_max_connections) * 100 > 80
+      - alert: WebSphere_Session_Invalidation_Spike
+        expr: rate(was_session_invalidated_total[5m]) > 50
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "High JDBC Connection Usage on {{ $labels.instance }}"
-          description: "More than 80% of JDBC connection pool in use."
-
-      - alert: WebSphere_JDBC_Connection_Exhausted
-        expr: (was_jdbc_pool_used_connections / was_jdbc_pool_max_connections) * 100 > 95
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "JDBC Connection Pool Exhausted on {{ $labels.instance }}"
-          description: "More than 95% of JDBC connection pool in use!"
-
-      # Thread Pool Alerts
-      - alert: WebSphere_High_Thread_Pool_Usage
-        expr: (was_threadpool_active_threads / was_threadpool_max_threads) * 100 > 80
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High Thread Pool Usage on WebSphere {{ $labels.instance }}"
-          description: "More than 80% of the thread pool is in use."
-
-      - alert: WebSphere_Thread_Pool_Exhausted
-        expr: (was_threadpool_active_threads / was_threadpool_max_threads) * 100 > 95
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Thread Pool Exhausted on WebSphere {{ $labels.instance }}"
-          description: "More than 95% of the thread pool is in use! Requests may be blocked."
+          summary: "Spike in Session Invalidations on {{ $labels.instance }}"
+          description: "Session invalidations are occurring at a rate greater than 50 per minute on instance {{ $labels.instance }}."
