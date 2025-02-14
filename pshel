@@ -1,16 +1,157 @@
-# Define the Prometheus executable and config file locations
-$prometheusExe = "D:\Monitoring\Prometheus\prometheus.exe"
-$configFile = "D:\Monitoring\Prometheus\prometheus.yml"
-$dataDir = "D:\Monitoring\Prometheus\data"
+Here's a complete YAML file containing all the alerts I mentioned. Save this as node_exporter_alerts.yml and load it into Prometheus Alertmanager.
 
-# Define the log file location
-$logFile = "D:\Monitoring\Prometheus\prometheus.log"
+groups:
+  - name: node-exporter-alerts
+    rules:
+      # CPU Alerts
+      - alert: High_CPU_Usage
+        expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 90
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU Usage on {{ $labels.instance }}"
+          description: "CPU usage is above 90% for the last 5 minutes."
 
-# Prepare the command to start Prometheus with necessary arguments
-$command = "$prometheusExe --config.file=$configFile --storage.tsdb.path=$dataDir"
+      - alert: High_Load_Avg
+        expr: node_load1 > (count(node_cpu_seconds_total{mode="user"}) * 1.5)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Load Average on {{ $labels.instance }}"
+          description: "Load average is too high (above 1.5x the number of cores)."
 
-# Start Prometheus and redirect both standard output and error to a log file
-Start-Process -FilePath $prometheusExe -ArgumentList "--config.file=$configFile --storage.tsdb.path=$dataDir" -NoNewWindow -RedirectStandardOutput $logFile -RedirectStandardError $logFile -Wait
+      # Memory Alerts
+      - alert: Low_Memory
+        expr: (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 < 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low Memory on {{ $labels.instance }}"
+          description: "Available memory is below 10%."
 
-# Optionally, you can display output in PowerShell (for manual testing)
-Write-Host "Prometheus started. Logs are being written to $logFile"
+      - alert: High_Swap_Usage
+        expr: (node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes) / node_memory_SwapTotal_bytes * 100 > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Swap Usage on {{ $labels.instance }}"
+          description: "Swap usage is above 50%, which may indicate memory pressure."
+
+      # Disk Alerts
+      - alert: Low_Disk_Space
+        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) * 100 < 10
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Low Disk Space on {{ $labels.instance }}"
+          description: "Disk space is below 10% on {{ $labels.mountpoint }}."
+
+      - alert: High_Disk_IO_Wait
+        expr: avg by (instance) (rate(node_cpu_seconds_total{mode="iowait"}[5m])) * 100 > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Disk IO Wait on {{ $labels.instance }}"
+          description: "Disk IO wait is above 20%, indicating slow disk performance."
+
+      # Network Alerts
+      - alert: High_Network_Usage
+        expr: rate(node_network_receive_bytes_total[5m]) + rate(node_network_transmit_bytes_total[5m]) > 1000000000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High Network Usage on {{ $labels.instance }}"
+          description: "Network usage is above 1Gbps for the last 5 minutes."
+
+      - alert: Network_Interface_Down
+        expr: node_network_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Network Interface Down on {{ $labels.instance }}"
+          description: "One or more network interfaces are down."
+
+      # System Health Alerts
+      - alert: Host_Down
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Host Down: {{ $labels.instance }}"
+          description: "The host {{ $labels.instance }} has been unreachable for more than 2 minutes."
+
+      - alert: Host_Rebooted
+        expr: time() - node_boot_time_seconds < 300
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "Host Rebooted: {{ $labels.instance }}"
+          description: "The system {{ $labels.instance }} has rebooted within the last 5 minutes."
+
+      # NFS Alerts
+      - alert: NFS_Mount_Missing
+        expr: node_filesystem_avail_bytes{fstype="nfs"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "NFS Mount Missing on {{ $labels.instance }}"
+          description: "The NFS mount at {{ $labels.mountpoint }} on {{ $labels.instance }} is missing or unavailable."
+
+      - alert: NFS_Almost_Full
+        expr: (node_filesystem_avail_bytes{fstype="nfs"} / node_filesystem_size_bytes{fstype="nfs"}) * 100 < 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "NFS Disk Space Low on {{ $labels.instance }}"
+          description: "NFS mount {{ $labels.mountpoint }} has less than 10% free space left."
+
+      # Service Alerts
+      - alert: App_Service_Down
+        expr: node_systemd_unit_state{state="active", name=~"app_.*"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "App Service Down on {{ $labels.instance }}"
+          description: "The systemd service {{ $labels.name }} on {{ $labels.instance }} is not running."
+
+      - alert: App_Service_Flapping
+        expr: changes(node_systemd_unit_state{name=~"app_.*", state="active"}[10m]) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "App Service Flapping on {{ $labels.instance }}"
+          description: "The service {{ $labels.name }} has restarted more than 5 times in the last 10 minutes."
+
+How to Use This File
+
+1. Save it as node_exporter_alerts.yml on your Prometheus server.
+
+
+2. Add the rule file reference in prometheus.yml:
+
+rule_files:
+  - "node_exporter_alerts.yml"
+
+
+3. Restart Prometheus:
+
+systemctl restart prometheus
+
+
+
+This will enable all the alerts for CPU, Memory, Disk, Network, NFS, and Services. Let me know if you need any changes!
+
