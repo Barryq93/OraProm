@@ -7,27 +7,29 @@ import logging
 import asyncio
 import re
 from logging.handlers import RotatingFileHandler
-from oraProm.ora import OracleConnection  # Import OracleConnection class from ora.py
-from oraProm.prometheus import CustomExporter, INVALID_LABEL_STR  # Assuming these are defined in prometheus.py
+from oraProm.ora import OracleConnection
+from oraProm.prometheus import CustomExporter, INVALID_LABEL_STR
 
 def setup_logging(log_path, log_level):
+    """Set up logging configuration."""
     os.makedirs(log_path, exist_ok=True)
     logger = logging.getLogger()
     logger.setLevel(log_level)
 
     log_file = os.path.join(log_path, "oraProm.log")
-    handler = RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5)
+    handler = RotatingFileHandler(log_file, maxBytes=10 * 1024 * 1024, backupCount=5)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     handler.setFormatter(formatter)
     logger.addHandler(handler)
 
-    error_log_file = os.path.join(log_path, "db2prom.err")
-    error_handler = RotatingFileHandler(error_log_file, maxBytes=10*1024*1024, backupCount=5)
+    error_log_file = os.path.join(log_path, "oraProm.err")
+    error_handler = RotatingFileHandler(error_log_file, maxBytes=10 * 1024 * 1024, backupCount=5)
     error_handler.setLevel(logging.ERROR)
     error_handler.setFormatter(formatter)
     logger.addHandler(error_handler)
 
 def oracle_instance_connection(config_connection):
+    """Create an Oracle connection instance."""
     logging.info("Setting up Oracle connection with provided configuration.")
     conn = {
         "db_name": config_connection["db_name"],
@@ -45,6 +47,7 @@ def oracle_instance_connection(config_connection):
     return OracleConnection(**conn)
 
 async def oracle_keep_connection(oracle_conn, retry_conn_interval=60):
+    """Keep the Oracle connection alive."""
     logging.info(f"Starting Oracle connection keeper with retry interval {retry_conn_interval} seconds.")
     while True:
         try:
@@ -54,6 +57,7 @@ async def oracle_keep_connection(oracle_conn, retry_conn_interval=60):
         await asyncio.sleep(retry_conn_interval)
 
 async def query_set(config_connection, oracle_conn, config_query, exporter, default_time_interval):
+    """Execute queries and update Prometheus metrics."""
     logging.info(f"Starting query set for: {config_query['name']} with interval {config_query.get('time_interval', default_time_interval)} seconds.")
     time_interval = config_query.get("time_interval", default_time_interval)
 
@@ -110,6 +114,7 @@ async def query_set(config_connection, oracle_conn, config_query, exporter, defa
             await asyncio.sleep(time_interval)
 
 def load_config_yaml(file_str):
+    """Load configuration from a YAML file."""
     logging.info(f"Loading configuration file: {file_str}")
     try:
         with open(file_str, "r") as f:
@@ -129,6 +134,7 @@ def load_config_yaml(file_str):
         sys.exit(1)
 
 def get_labels_list(config_connections):
+    """Get a list of all labels used in the configuration."""
     max_conn_labels = set()
     for c in config_connections:
         if "extra_labels" in c:
@@ -142,6 +148,7 @@ def get_labels_list(config_connections):
     return max_conn_labels
 
 def start_prometheus_exporter(config_queries, max_conn_labels, port):
+    """Start the Prometheus exporter."""
     logging.info(f"Starting Prometheus exporter on port {port} and initializing metrics.")
     try:
         custom_exporter = CustomExporter(port=port)
@@ -163,6 +170,7 @@ def start_prometheus_exporter(config_queries, max_conn_labels, port):
         raise e
 
 async def main(config_connection, config_queries, exporter, default_time_interval, port):
+    """Main function to run the application."""
     executions = []
     try:
         oracle_conn = oracle_instance_connection(config_connection)
@@ -180,6 +188,7 @@ async def main(config_connection, config_queries, exporter, default_time_interva
         return None
 
 def signal_handler(sig, frame):
+    """Handle termination signals."""
     logging.info("Received termination signal, shutting down gracefully.")
     loop.stop()
     sys.exit(0)
