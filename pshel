@@ -1,98 +1,33 @@
-groups:
-  - name: websphere_alerts
-    interval: 30s
-    rules:
-      # JVM Performance Alerts
-      - alert: WebSphere_JVM_High_Heap_Usage
-        expr: (jvm_memory_used_bytes / jvm_memory_max_bytes) * 100 > 80
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High JVM Heap Usage on {{ $labels.instance }}"
-          description: "JVM heap usage has exceeded 80% on instance {{ $labels.instance }}."
+@echo off
 
-      - alert: WebSphere_JVM_High_GC_Duration
-        expr: rate(jvm_gc_duration_seconds_total[5m]) > 1
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Elevated Garbage Collection Duration on {{ $labels.instance }}"
-          description: "Garbage collection is taking more than 1 second per second on instance {{ $labels.instance }}."
+REM Script to uncatalog all nodes and databases in DB2 (Windows batch script)
 
-      # Thread Pool Monitoring
-      - alert: WebSphere_ThreadPool_High_Utilization
-        expr: (was_threadpool_active_threads / was_threadpool_size) * 100 > 80
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High Thread Pool Utilization on {{ $labels.instance }}"
-          description: "Thread pool utilization has exceeded 80% on instance {{ $labels.instance }}."
+REM Set DB2 instance (replace with your instance name)
+set DB2INSTANCE=db2inst1
 
-      - alert: WebSphere_ThreadPool_Saturation
-        expr: was_threadpool_active_threads == was_threadpool_size
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Thread Pool Saturation on {{ $labels.instance }}"
-          description: "Thread pool is fully utilized on instance {{ $labels.instance }}."
+REM Set DB2 command path (replace with your DB2 bin directory)
+set DB2BIN="C:\Program Files\IBM\SQLLIB\BIN"
 
-      # Connection Pool Monitoring
-      - alert: WebSphere_ConnectionPool_High_Utilization
-        expr: (was_connectionpool_size - was_connectionpool_free_connections) / was_connectionpool_size * 100 > 80
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High Connection Pool Utilization on {{ $labels.instance }}"
-          description: "Connection pool utilization has exceeded 80% on instance {{ $labels.instance }}."
+REM Uncatalog all nodes
+echo Uncataloging nodes...
+for /f "tokens=4" %%n in ('%DB2BIN%\db2.exe list node directory ^| findstr "Node name"') do (
+    %DB2BIN%\db2.exe uncatalog node %%n
+)
 
-      - alert: WebSphere_ConnectionPool_Exhaustion
-        expr: was_connectionpool_free_connections == 0
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Connection Pool Exhaustion on {{ $labels.instance }}"
-          description: "No free connections available in the pool on instance {{ $labels.instance }}."
+REM Uncatalog all databases
+echo Uncataloging databases...
+for /f "tokens=4" %%d in ('%DB2BIN%\db2.exe list database directory ^| findstr "Database alias"') do (
+    %DB2BIN%\db2.exe uncatalog database %%d
+)
 
-      # Servlet Performance Monitoring
-      - alert: WebSphere_Servlet_High_Response_Time
-        expr: rate(was_servlet_response_time_seconds_total[5m]) / rate(was_servlet_requests_total[5m]) > 2
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High Servlet Response Time on {{ $labels.instance }}"
-          description: "Average servlet response time exceeds 2 seconds on instance {{ $labels.instance }}."
+REM List remaining database entries
+echo Remaining database entries:
+%DB2BIN%\db2.exe list database directory
 
-      - alert: WebSphere_Servlet_High_Error_Rate
-        expr: rate(was_servlet_errors_total[5m]) / rate(was_servlet_requests_total[5m]) > 0.05
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: "High Servlet Error Rate on {{ $labels.instance }}"
-          description: "Error rate exceeds 5% of total requests on instance {{ $labels.instance }}."
+REM List remaining node entries
+echo Remaining node entries:
+%DB2BIN%\db2.exe list node directory
 
-      # Session Management Monitoring
-      - alert: WebSphere_High_Active_Sessions
-        expr: was_session_active_sessions > 1000
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High Active Session Count on {{ $labels.instance }}"
-          description: "Active sessions have exceeded 1000 on instance {{ $labels.instance }}."
+echo Node and database directories uncataloged.
 
-      - alert: WebSphere_Session_Invalidation_Spike
-        expr: rate(was_session_invalidated_total[5m]) > 50
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Spike in Session Invalidations on {{ $labels.instance }}"
-          description: "Session invalidations are occurring at a rate greater than 50 per minute on instance {{ $labels.instance }}."
+echo Script completed.
