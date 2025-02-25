@@ -61,7 +61,7 @@ WITH TableMetrics AS (
     SELECT 
         TABSCHEMA,
         TABNAME,
-        READS AS TABLE_READS  -- Total reads, which may represent table scans
+        ROWS_READ AS TABLE_READS  -- Tracks the number of rows read, which corresponds to table scans
     FROM TABLE(MON_GET_TABLE('', '', -2))  -- Monitor table-level metrics
 ),
 IndexMetrics AS (
@@ -85,8 +85,8 @@ WHERE t.TABLE_READS > 0
 ORDER BY t.TABLE_READS DESC;
 
 -- 10. Find tables needing REORG (fragmentation issues or overflow accesses)
-SELECT TABSCHEMA, TABNAME, OVERFLOW_ACCESSES, NUM_FREESPACE, CARDINALITY
+SELECT TABSCHEMA, TABNAME, OVERFLOW_ACCESSES, NUM_OVERFLOW_PAGES, CARDINALITY
 FROM TABLE(MON_GET_TABLE('', '', -2))
-WHERE OVERFLOW_ACCESSES > 0 
-   OR NUM_FREESPACE < 10  -- This checks for tables with low free space (may indicate fragmentation)
+WHERE OVERFLOW_ACCESSES > 0  -- Tables with overflow accesses may need REORG due to fragmentation
+   OR NUM_OVERFLOW_PAGES > 10  -- Tables with a significant number of overflow pages may need REORG
 ORDER BY OVERFLOW_ACCESSES DESC;
