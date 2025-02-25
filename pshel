@@ -84,13 +84,19 @@ WHERE t.TABLE_READS > 0
   AND COALESCE(i.INDEX_SCANS, 0) = 0  -- Show only tables with high scans and no index usage
 ORDER BY t.TABLE_READS DESC;
 
--- 10. Find tables needing REORG (fragmentation issues or overflow accesses)
+-- 10. Find tables that may need REORG based on overflow accesses, page reads/writes, and activity
 SELECT TABSCHEMA, TABNAME, 
-       SUM(OVERFLOW_ACCESSES) AS TOTAL_OVERFLOW_ACCESSES,
-       SUM(NUM_FREESPACE) AS TOTAL_FREESPACE,
+       SUM(NUM_OVERFLOW_ACCESSES) AS TOTAL_OVERFLOW_ACCESSES,
+       SUM(NUM_PAGE_READS) AS TOTAL_PAGE_READS,
+       SUM(NUM_PAGE_WRITES) AS TOTAL_PAGE_WRITES,
+       SUM(NUM_INSERTS) AS TOTAL_INSERTS,
+       SUM(NUM_UPDATES) AS TOTAL_UPDATES,
+       SUM(NUM_DELETES) AS TOTAL_DELETES,
        MAX(TABLE_SIZE) AS TOTAL_TABLE_SIZE
 FROM TABLE(MON_GET_TABLE('', '', -2))
 GROUP BY TABSCHEMA, TABNAME
-HAVING SUM(OVERFLOW_ACCESSES) > 0  -- Tables with overflow accesses likely need REORG due to fragmentation
-   OR SUM(NUM_FREESPACE) < 10      -- Tables with low free space may be fragmented and require REORG
+HAVING SUM(NUM_OVERFLOW_ACCESSES) > 0  -- Tables with overflow accesses (likely fragmented)
+   OR SUM(NUM_PAGE_READS) > 1000     -- Tables with a high number of page reads (indicating inefficiency)
+   OR SUM(NUM_INSERTS) > 1000        -- Tables with a high number of inserts (potential candidate for REORG)
+   OR SUM(NUM_UPDATES) > 1000        -- Tables with a high number of updates (indicating frequent changes)
 ORDER BY TOTAL_OVERFLOW_ACCESSES DESC;
