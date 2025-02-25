@@ -85,8 +85,12 @@ WHERE t.TABLE_READS > 0
 ORDER BY t.TABLE_READS DESC;
 
 -- 10. Find tables needing REORG (fragmentation issues or overflow accesses)
-SELECT TABSCHEMA, TABNAME, OVERFLOW_ACCESSES, NUM_OVERFLOW_PAGES, CARDINALITY
+SELECT TABSCHEMA, TABNAME, 
+       SUM(OVERFLOW_ACCESSES) AS TOTAL_OVERFLOW_ACCESSES,
+       SUM(NUM_OVERFLOW_PAGES) AS TOTAL_OVERFLOW_PAGES,
+       MAX(CARDINALITY) AS TOTAL_ROWS
 FROM TABLE(MON_GET_TABLE('', '', -2))
-WHERE OVERFLOW_ACCESSES > 0  -- Tables with overflow accesses may need REORG due to fragmentation
-   OR NUM_OVERFLOW_PAGES > 10  -- Tables with a significant number of overflow pages may need REORG
-ORDER BY OVERFLOW_ACCESSES DESC;
+GROUP BY TABSCHEMA, TABNAME
+HAVING SUM(OVERFLOW_ACCESSES) > 0  -- Tables with any overflow accesses
+   OR SUM(NUM_OVERFLOW_PAGES) > 10  -- Tables with significant overflow pages
+ORDER BY TOTAL_OVERFLOW_ACCESSES DESC;
