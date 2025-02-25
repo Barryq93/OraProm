@@ -2,42 +2,44 @@
 -- DB2 PERFORMANCE MONITORING & INDEX OPTIMIZATION CHECKS
 -- *************************************************************
 
--- 1. Check overall database performance metrics
+-- 1. Check overall database performance metrics (with time in seconds)
 SELECT TOTAL_APP_COMMITS, TOTAL_APP_ROLLBACKS, ACT_COMPLETED_TOTAL, APP_RQSTS_COMPLETED_TOTAL,
        AVG_RQST_CPU_TIME, RQST_WAIT_TIME_PERCENT, ACT_WAIT_TIME_PERCENT, IO_WAIT_TIME_PERCENT,
        LOCK_WAIT_TIME_PERCENT, TOTAL_BP_HIT_RATIO_PERCENT
 FROM SYSIBMADM.MON_DB_SUMMARY;
 
 -- 2. Identify tables with heavy full table scans (potential index candidates)
-SELECT TABSCHEMA, TABNAME, TABLE_SCANS, ROWS_READ, ROWS_INSERTED, ROWS_UPDATED, ROWS_DELETED
+SELECT TABSCHEMA, TABNAME, READS AS TABLE_READS, INSERTS, UPDATES, DELETES
 FROM TABLE(MON_GET_TABLE('', '', -2))
-WHERE TABLE_SCANS > 1000
-ORDER BY TABLE_SCANS DESC;
+WHERE READS > 1000
+ORDER BY READS DESC;
 
 -- 3. Identify high CPU-consuming queries
-SELECT STMT_TEXT, NUM_EXECUTIONS, TOTAL_CPU_TIME, TOTAL_EXEC_TIME, ROWS_READ
+-- Total CPU time (seconds) = TOTAL_CPU_TIME / 1000000
+SELECT STMT_TEXT, NUM_EXECUTIONS, TOTAL_CPU_TIME / 1000000 AS CPU_TIME_SECONDS, TOTAL_ACT_TIME / 1000000 AS ACT_TIME_SECONDS, ROWS_READ
 FROM TABLE(MON_GET_PKG_CACHE_STMT(NULL, NULL, NULL, -2))
 ORDER BY TOTAL_CPU_TIME DESC
 FETCH FIRST 10 ROWS ONLY;
 
 -- 4. Identify queries with high buffer pool reads (potential indexing issue)
+-- Buffer pool read counts (read access to data pages)
 SELECT STMT_TEXT, NUM_EXECUTIONS, POOL_DATA_L_READS, POOL_INDEX_L_READS, POOL_TEMP_DATA_L_READS
 FROM TABLE(MON_GET_PKG_CACHE_STMT(NULL, NULL, NULL, -2))
 ORDER BY POOL_DATA_L_READS DESC
 FETCH FIRST 10 ROWS ONLY;
 
 -- 5. Find queries performing full table scans (inefficient queries)
-SELECT STMT_TEXT, NUM_EXECUTIONS, ROWS_READ, ROWS_RETURNED, TOTAL_EXEC_TIME
+SELECT STMT_TEXT, NUM_EXECUTIONS, ROWS_READ, ROWS_RETURNED, TOTAL_ACT_TIME / 1000000 AS ACT_TIME_SECONDS
 FROM TABLE(MON_GET_PKG_CACHE_STMT(NULL, NULL, NULL, -2))
 WHERE ROWS_READ > 1000000
 AND ROWS_RETURNED < (ROWS_READ * 0.01)
 ORDER BY ROWS_READ DESC
 FETCH FIRST 10 ROWS ONLY;
 
--- 6. Find the top 10 longest-running queries
-SELECT STMT_TEXT, NUM_EXECUTIONS, TOTAL_EXEC_TIME
+-- 6. Find the top 10 longest-running queries (with time in seconds)
+SELECT STMT_TEXT, NUM_EXECUTIONS, TOTAL_ACT_TIME / 1000000 AS ACT_TIME_SECONDS
 FROM TABLE(MON_GET_PKG_CACHE_STMT(NULL, NULL, NULL, -2))
-ORDER BY TOTAL_EXEC_TIME DESC
+ORDER BY TOTAL_ACT_TIME DESC
 FETCH FIRST 10 ROWS ONLY;
 
 -- 7. Find queries with high sort activity (potential index or query tuning issue)
@@ -48,20 +50,43 @@ ORDER BY TOTAL_SORTS DESC
 FETCH FIRST 10 ROWS ONLY;
 
 -- 8. Find queries with high lock waits (possible contention issue)
-SELECT STMT_TEXT, LOCK_WAIT_TIME, LOCK_WAITS
+SELECT STMT_TEXT, LOCK_WAIT_TIME / 1000000 AS LOCK_WAIT_TIME_SECONDS, LOCK_WAITS
 FROM TABLE(MON_GET_PKG_CACHE_STMT(NULL, NULL, NULL, -2))
 WHERE LOCK_WAIT_TIME > 10000
 ORDER BY LOCK_WAIT_TIME DESC
 FETCH FIRST 10 ROWS ONLY;
 
--- 9. Check index effectiveness (index scans vs. table scans)
-SELECT TABSCHEMA, TABNAME, INDEX_SCANS, TABLE_SCANS
-FROM TABLE(MON_GET_INDEX('', '', -2))
-WHERE TABLE_SCANS > INDEX_SCANS
-ORDER BY TABLE_SCANS DESC;
+-- 9. Identify tables with high table scans but low index scans (to identify potential index candidates)
+WITH TableMetrics AS (
+    SELECT 
+        TABSCHEMA,
+        TABNAME,
+        READS AS TABLE_READS  -- Total reads, which may represent table scans
+    FROM TABLE(MON_GET_TABLE('', '', -2))  -- Monitor table-level metrics
+),
+IndexMetrics AS (
+    SELECT 
+        TABSCHEMA,
+        TABNAME,
+        SCANS AS INDEX_SCANS  -- Number of index scans performed
+    FROM TABLE(MON_GET_INDEX('', '', -2))  -- Monitor index-level metrics
+)
+SELECT 
+    t.TABSCHEMA,
+    t.TABNAME,
+    t.TABLE_READS, 
+    COALESCE(i.INDEX_SCANS, 0) AS INDEX_SCANS  -- Show 0 if no index scans
+FROM TableMetrics t
+LEFT JOIN IndexMetrics i
+    ON t.TABSCHEMA = i.TABSCHEMA 
+    AND t.TABNAME = i.TABNAME
+WHERE t.TABLE_READS > 0
+  AND COALESCE(i.INDEX_SCANS, 0) = 0  -- Show only tables with high scans and no index usage
+ORDER BY t.TABLE_READS DESC;
 
--- 10. Find tables needing REORG (fragmentation issues)
-SELECT TABSCHEMA, TABNAME, REORG_PENDING, OVERFLOW_ACCESSES
+-- 10. Find tables needing REORG (fragmentation issues or overflow accesses)
+SELECT TABSCHEMA, TABNAME, OVERFLOW_ACCESSES, NUM_FREESPACE, CARDINALITY
 FROM TABLE(MON_GET_TABLE('', '', -2))
-WHERE REORG_PENDING = 'Y' OR OVERFLOW_ACCESSES > 0
+WHERE OVERFLOW_ACCESSES > 0 
+   OR NUM_FREESPACE < 10  -- This checks for tables with low free space (may indicate fragmentation)
 ORDER BY OVERFLOW_ACCESSES DESC;
