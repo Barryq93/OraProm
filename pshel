@@ -1,33 +1,6 @@
-@echo off
-
-REM Script to uncatalog all nodes and databases in DB2 (Windows batch script)
-
-REM Set DB2 instance (replace with your instance name)
-set DB2INSTANCE=db2inst1
-
-REM Set DB2 command path (replace with your DB2 bin directory)
-set DB2BIN="C:\Program Files\IBM\SQLLIB\BIN"
-
-REM Uncatalog all nodes
-echo Uncataloging nodes...
-for /f "tokens=4" %%n in ('%DB2BIN%\db2.exe list node directory ^| findstr "Node name"') do (
-    %DB2BIN%\db2.exe uncatalog node %%n
-)
-
-REM Uncatalog all databases
-echo Uncataloging databases...
-for /f "tokens=4" %%d in ('%DB2BIN%\db2.exe list database directory ^| findstr "Database alias"') do (
-    %DB2BIN%\db2.exe uncatalog database %%d
-)
-
-REM List remaining database entries
-echo Remaining database entries:
-%DB2BIN%\db2.exe list database directory
-
-REM List remaining node entries
-echo Remaining node entries:
-%DB2BIN%\db2.exe list node directory
-
-echo Node and database directories uncataloged.
-
-echo Script completed.
+SELECT TABSCHEMA, TABNAME, DATA_PARTITION_ID, ROWS_READ, ROWS_INSERTED, ROWS_UPDATED, ROWS_DELETED, 
+       ROWS_MODIFIED, OVERFLOW_ACCESSES, TABLE_SCANS, RANGE_SCANS, SEQUENTIAL_PAGE_READS, DIRECT_READS
+FROM TABLE(MON_GET_TABLE('', -2))
+WHERE TABLE_SCANS > 1000 
+AND RANGE_SCANS < TABLE_SCANS -- Low range scan usage suggests missing indexes
+ORDER BY TABLE_SCANS DESC;
