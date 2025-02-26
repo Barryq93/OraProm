@@ -1,102 +1,150 @@
--- *************************************************************
--- DB2 PERFORMANCE MONITORING & INDEX OPTIMIZATION CHECKS
--- *************************************************************
+-- File: db2_tuning_cm873.sql
+-- Purpose: Tune and monitor a DB2 LUW database supporting IBM CM 8.7.3
+-- Date: February 26, 2025
+-- Notes: Replace <dbname>, <schema>, and <table> with actual values before running
 
--- 1. Check overall database performance metrics (with time in seconds)
-SELECT TOTAL_APP_COMMITS, TOTAL_APP_ROLLBACKS, ACT_COMPLETED_TOTAL, APP_RQSTS_COMPLETED_TOTAL,
-       AVG_RQST_CPU_TIME, RQST_WAIT_TIME_PERCENT, ACT_WAIT_TIME_PERCENT, IO_WAIT_TIME_PERCENT,
-       LOCK_WAIT_TIME_PERCENT, TOTAL_BP_HIT_RATIO_PERCENT
-FROM SYSIBMADM.MON_DB_SUMMARY;
+-- Connect to the database
+CONNECT TO <dbname>;
 
--- 2. Identify tables with heavy full table scans (potential index candidates)
-SELECT TABSCHEMA, TABNAME, READS AS TABLE_READS, INSERTS, UPDATES, DELETES
-FROM TABLE(MON_GET_TABLE('', '', -2))
-WHERE READS > 1000
-ORDER BY READS DESC;
+-- *** Section 1: Assess Current Performance Baseline ***
+-- Monitor database activity
+SELECT SUBSTR(DB_NAME, 1, 15) AS DBNAME, 
+       MEMBER, 
+       TOTAL_CPU_TIME, 
+       TOTAL_WAIT_TIME, 
+       ROWS_READ, 
+       ROWS_RETURNED 
+FROM TABLE(MON_GET_DATABASE(-2));
 
--- 3. Identify high CPU-consuming queries
--- Total CPU time (seconds) = TOTAL_CPU_TIME / 1000000
-SELECT STMT_TEXT, NUM_EXECUTIONS, TOTAL_CPU_TIME / 1000000 AS CPU_TIME_SECONDS, TOTAL_ACT_TIME / 1000000 AS ACT_TIME_SECONDS, ROWS_READ
-FROM TABLE(MON_GET_PKG_CACHE_STMT(NULL, NULL, NULL, -2))
-ORDER BY TOTAL_CPU_TIME DESC
+-- Check buffer pool hit ratios
+SELECT SUBSTR(BP_NAME, 1, 20) AS BP_NAME, 
+       TOTAL_LOGICAL_READS, 
+       TOTAL_PHYSICAL_READS, 
+       (TOTAL_LOGICAL_READS - TOTAL_PHYSICAL_READS) * 100 / TOTAL_LOGICAL_READS AS HIT_RATIO 
+FROM TABLE(MON_GET_BUFFERPOOL('', -2));
+
+-- *** Section 2: Optimize Database Configuration ***
+-- Check current DATABASE_MEMORY setting
+SELECT NAME, VALUE 
+FROM SYSIBMADM.DBCFG 
+WHERE NAME = 'DATABASE_MEMORY';
+
+-- Example: Adjust buffer pool size (tune based on memory availability)
+ALTER BUFFERPOOL IBMDEFAULTBP SIZE 50000;
+
+-- Tune sort heap for IBM CM queries
+UPDATE DB CFG FOR <dbname> USING SHEAPTHRES_SHR 100000 SORTHEAP 10000;
+
+-- Configure log settings for sufficient transaction space
+UPDATE DB CFG FOR <dbname> USING LOGFILSIZ 4096 LOGPRIMARY 10 LOGSECOND 20;
+
+-- Optional: Enable CUR_COMMIT to reduce lock contention (verify IBM CM compatibility)
+UPDATE DB CFG FOR <dbname> USING CUR_COMMIT ON;
+
+-- *** Section 3: Update Statistics and Reorganize ***
+-- Update statistics for all tables in a schema (replace <schema>)
+CALL ADMIN_CMD('RUNSTATS ON TABLE ALL FOR SCHEMA <schema> WITH DISTRIBUTION AND DETAILED INDEXES ALL');
+
+-- Check tables/indexes needing reorganization
+CALL ADMIN_CMD('REORGCHK UPDATE STATISTICS ON TABLE ALL');
+
+-- Example: Reorg a specific table (replace <schema>.<table>)
+CALL ADMIN_CMD('REORG TABLE <schema>.<table>');
+CALL ADMIN_CMD('REORG INDEXES ALL FOR TABLE <schema>.<table>');
+
+-- Example: Online reorg to minimize downtime
+CALL ADMIN_CMD('REORG TABLE <schema>.<table> INPLACE');
+
+-- *** Section 4: Index Tuning ***
+-- Example: Create an index (replace with actual columns and table)
+CREATE INDEX IDX_CM_DOCS ON <schema>.<table> (DOCUMENT_ID, METADATA_FIELD);
+
+-- *** Section 5: Monitor Workload ***
+-- Check for lock waits or deadlocks
+SELECT SUBSTR(APPLICATION_NAME, 1, 20) AS APP_NAME, 
+       LOCK_WAIT_TIME, 
+       LOCK_WAITS 
+FROM TABLE(MON_GET_APPLICATION('', -2));
+
+-- Identify expensive queries
+SELECT SUBSTR(STMT_TEXT, 1, 50) AS QUERY, 
+       TOTAL_CPU_TIME, 
+       NUM_EXECUTIONS, 
+       TOTAL_WAIT_TIME 
+FROM TABLE(MON_GET_PKG_CACHE_STMT('', NULL, NULL, -2)) 
+ORDER BY TOTAL_CPU_TIME DESC 
 FETCH FIRST 10 ROWS ONLY;
 
--- 4. Identify queries with high buffer pool reads (potential indexing issue)
--- Buffer pool read counts (read access to data pages)
-SELECT STMT_TEXT, NUM_EXECUTIONS, POOL_DATA_L_READS, POOL_INDEX_L_READS, POOL_TEMP_DATA_L_READS
-FROM TABLE(MON_GET_PKG_CACHE_STMT(NULL, NULL, NULL, -2))
-ORDER BY POOL_DATA_L_READS DESC
-FETCH FIRST 10 ROWS ONLY;
+-- *** Section 6: Diagnostic Queries ***
+-- Check for missing indexes (high table scans)
+SELECT SUBSTR(TABSCHEMA, 1, 10) AS SCHEMA, 
+       SUBSTR(TABNAME, 1, 20) AS TABLE_NAME, 
+       TABLE_SCANS, 
+       ROWS_READ 
+FROM TABLE(MON_GET_TABLE('', '', -2)) 
+WHERE TABLE_SCANS > 1000 
+ORDER BY TABLE_SCANS DESC;
 
--- 5. Find queries performing full table scans (inefficient queries)
-SELECT STMT_TEXT, NUM_EXECUTIONS, ROWS_READ, ROWS_RETURNED, TOTAL_ACT_TIME / 1000000 AS ACT_TIME_SECONDS
-FROM TABLE(MON_GET_PKG_CACHE_STMT(NULL, NULL, NULL, -2))
-WHERE ROWS_READ > 1000000
-AND ROWS_RETURNED < (ROWS_READ * 0.01)
-ORDER BY ROWS_READ DESC
-FETCH FIRST 10 ROWS ONLY;
+-- Verify index usage (unused indexes older than 30 days)
+SELECT SUBSTR(INDSCHEMA, 1, 10) AS SCHEMA, 
+       SUBSTR(INDNAME, 1, 20) AS INDEX_NAME, 
+       SUBSTR(TABSCHEMA, 1, 10) AS TAB_SCHEMA, 
+       SUBSTR(TABNAME, 1, 20) AS TABLE_NAME, 
+       LASTUSED 
+FROM SYSCAT.INDEXES 
+WHERE LASTUSED < CURRENT_DATE - 30 DAYS 
+ORDER BY LASTUSED;
 
--- 6. Find the top 10 longest-running queries (with time in seconds)
-SELECT STMT_TEXT, NUM_EXECUTIONS, TOTAL_ACT_TIME / 1000000 AS ACT_TIME_SECONDS
-FROM TABLE(MON_GET_PKG_CACHE_STMT(NULL, NULL, NULL, -2))
-ORDER BY TOTAL_ACT_TIME DESC
-FETCH FIRST 10 ROWS ONLY;
+-- Check table fragmentation and outdated stats
+SELECT SUBSTR(TABSCHEMA, 1, 10) AS SCHEMA, 
+       SUBSTR(TABNAME, 1, 20) AS TABLE_NAME, 
+       STATS_TIME, 
+       CARD, 
+       NPAGES 
+FROM SYSCAT.TABLES 
+WHERE STATS_TIME < CURRENT_TIMESTAMP - 7 DAYS 
+AND TABSCHEMA NOT LIKE 'SYS%';
 
--- 7. Find queries with high sort activity (potential index or query tuning issue)
-SELECT STMT_TEXT, TOTAL_SORTS, SORT_OVERFLOWS
-FROM TABLE(MON_GET_PKG_CACHE_STMT(NULL, NULL, NULL, -2))
-WHERE TOTAL_SORTS > 1000
-ORDER BY TOTAL_SORTS DESC
-FETCH FIRST 10 ROWS ONLY;
+-- Check index fragmentation
+SELECT SUBSTR(INDSCHEMA, 1, 10) AS SCHEMA, 
+       SUBSTR(INDNAME, 1, 20) AS INDEX_NAME, 
+       SUBSTR(TABSCHEMA, 1, 10) AS TAB_SCHEMA, 
+       SUBSTR(TABNAME, 1, 20) AS TABLE_NAME, 
+       NLEAF, 
+       NLEVELS 
+FROM SYSCAT.INDEXES 
+WHERE NLEVELS > 4 OR NLEAF > 10000;
 
--- 8. Find queries with high lock waits (possible contention issue)
-SELECT STMT_TEXT, LOCK_WAIT_TIME / 1000000 AS LOCK_WAIT_TIME_SECONDS, LOCK_WAITS
-FROM TABLE(MON_GET_PKG_CACHE_STMT(NULL, NULL, NULL, -2))
-WHERE LOCK_WAIT_TIME > 10000
-ORDER BY LOCK_WAIT_TIME DESC
-FETCH FIRST 10 ROWS ONLY;
+-- Monitor tablespace usage
+SELECT SUBSTR(TBSPACE, 1, 20) AS TABLESPACE, 
+       TOTAL_PAGES, 
+       USED_PAGES, 
+       (USED_PAGES * 100 / TOTAL_PAGES) AS PCT_USED 
+FROM TABLE(MON_GET_TABLESPACE('', -2)) 
+WHERE PCT_USED > 85;
 
--- 9. Identify tables with high table scans but low index scans (to identify potential index candidates)
-WITH TableMetrics AS (
-    SELECT 
-        TABSCHEMA,
-        TABNAME,
-        ROWS_READ AS TABLE_READS  -- Tracks the number of rows read, which corresponds to table scans
-    FROM TABLE(MON_GET_TABLE('', '', -2))  -- Monitor table-level metrics
-),
-IndexMetrics AS (
-    SELECT 
-        TABSCHEMA,
-        TABNAME,
-        SCANS AS INDEX_SCANS  -- Number of index scans performed
-    FROM TABLE(MON_GET_INDEX('', '', -2))  -- Monitor index-level metrics
-)
-SELECT 
-    t.TABSCHEMA,
-    t.TABNAME,
-    t.TABLE_READS, 
-    COALESCE(i.INDEX_SCANS, 0) AS INDEX_SCANS  -- Show 0 if no index scans
-FROM TableMetrics t
-LEFT JOIN IndexMetrics i
-    ON t.TABSCHEMA = i.TABSCHEMA 
-    AND t.TABNAME = i.TABNAME
-WHERE t.TABLE_READS > 0
-  AND COALESCE(i.INDEX_SCANS, 0) = 0  -- Show only tables with high scans and no index usage
-ORDER BY t.TABLE_READS DESC;
+-- Check database connections
+SELECT NUM_AGENTS, 
+       AGENTS_WAITING, 
+       APPLICATIONS_WAITING 
+FROM TABLE(MON_GET_SERVICE_CLASS('', '', -2));
 
--- 10. Find tables that may need REORG based on overflow accesses, page reads/writes, and activity
-SELECT TABSCHEMA, TABNAME, 
-       SUM(NUM_OVERFLOW_ACCESSES) AS TOTAL_OVERFLOW_ACCESSES,
-       SUM(NUM_PAGE_READS) AS TOTAL_PAGE_READS,
-       SUM(NUM_PAGE_WRITES) AS TOTAL_PAGE_WRITES,
-       SUM(NUM_INSERTS) AS TOTAL_INSERTS,
-       SUM(NUM_UPDATES) AS TOTAL_UPDATES,
-       SUM(NUM_DELETES) AS TOTAL_DELETES,
-       MAX(TABLE_SIZE) AS TOTAL_TABLE_SIZE
-FROM TABLE(MON_GET_TABLE('', '', -2))
-GROUP BY TABSCHEMA, TABNAME
-HAVING SUM(NUM_OVERFLOW_ACCESSES) > 0  -- Tables with overflow accesses (likely fragmented)
-   OR SUM(NUM_PAGE_READS) > 1000     -- Tables with a high number of page reads (indicating inefficiency)
-   OR SUM(NUM_INSERTS) > 1000        -- Tables with a high number of inserts (potential candidate for REORG)
-   OR SUM(NUM_UPDATES) > 1000        -- Tables with a high number of updates (indicating frequent changes)
-ORDER BY TOTAL_OVERFLOW_ACCESSES DESC;
+-- Identify slow queries
+SELECT SUBSTR(STMT_TEXT, 1, 50) AS QUERY, 
+       EXECUTION_TIME, 
+       TOTAL_CPU_TIME 
+FROM TABLE(MON_GET_ACTIVITY(NULL, -2)) 
+WHERE EXECUTION_TIME > 1000 
+ORDER BY EXECUTION_TIME DESC;
+
+-- Detect lock waits
+SELECT SUBSTR(APPLICATION_NAME, 1, 20) AS APP, 
+       LOCK_OBJECT_TYPE, 
+       LOCK_WAIT_TIME 
+FROM TABLE(MON_GET_LOCKS(NULL, -2)) 
+WHERE LOCK_WAIT_TIME > 0;
+
+-- Disconnect from the database
+CONNECT RESET;
+
+-- End of script
