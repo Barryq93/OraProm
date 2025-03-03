@@ -1,102 +1,193 @@
-# Configuration
-$servers = "Server1", "Server2", "Server3", "Server4", "Server5", "Server6", "Server7" # Replace with your server names
-$runTimeMinutes = 60 # Run for 1 hour
-$logDirectory = "C:\NetworkLogs" # Adjust the log directory as needed
+# Multi-Server Network Traffic Monitor
+# This script monitors network traffic on multiple servers simultaneously,
+# logging unique connections to CSV files with source, destination, and process info
 
-# Ensure log directory exists
-if (!(Test-Path -Path $logDirectory -PathType Container)) {
-    New-Item -ItemType Directory -Path $logDirectory | Out-Null
+# List of servers to monitor
+$servers = @(
+    "Server1",
+    "Server2",
+    "Server3",
+    "Server4",
+    "Server5",
+    "Server6",
+    "Server7"
+)
+
+# Function to resolve IP address to hostname
+function Resolve-IPAddress {
+    param (
+        [string]$IPAddress
+    )
+    
+    try {
+        $result = nslookup $IPAddress 2>$null
+        if ($result -match "Name:\s+(.+)") {
+            return $Matches[1].Trim()
+        }
+        else {
+            return $IPAddress
+        }
+    }
+    catch {
+        return $IPAddress
+    }
 }
 
-$jobs = @() # Array to store job objects
+# Function to monitor network traffic on a server
+function Monitor-NetworkTraffic {
+    param (
+        [string]$ServerName
+    )
 
-foreach ($server in $servers) {
-    $scriptBlock = {
-        param($serverName, $runMinutes, $logDir)
-
-        $inboundLogPath = Join-Path $logDir "$($serverName)_inbound.log"
-        $outboundLogPath = Join-Path $logDir "$($serverName)_outbound.log"
-
-        if (Test-Path $inboundLogPath) { Clear-Content $inboundLogPath }
-        if (Test-Path $outboundLogPath) { Clear-Content $outboundLogPath }
-
-        $uniqueInbound = @{}
-        $uniqueOutbound = @{}
-
-        $endTime = (Get-Date).AddMinutes($runMinutes)
-
-        Write-Host "Starting network capture on $serverName..."
-
-        while ((Get-Date) -lt $endTime) {
-            try {
-                $inboundConnections = Get-NetTCPConnection -State Established
-                foreach ($connection in $inboundConnections) {
-                    $uniqueKey = "$($connection.RemoteAddress):$($connection.RemotePort) -> $($connection.LocalAddress):$($connection.LocalPort)"
-                    if (-not $uniqueInbound.ContainsKey($uniqueKey)) {
-                        $uniqueInbound[$uniqueKey] = $true
-
-                        try {
-                            $resolvedRemoteName = [System.Net.Dns]::GetHostEntry($connection.RemoteAddress).HostName
-                        } catch {
-                            $resolvedRemoteName = $connection.RemoteAddress # If resolution fails, use IP
-                        }
-
-                        try {
-                            $resolvedLocalName = [System.Net.Dns]::GetHostEntry($connection.LocalAddress).HostName
-                        } catch {
-                            $resolvedLocalName = $connection.LocalAddress
-                        }
-
-                        try {
-                            $process = Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue
-                            $processName = $process.ProcessName
-                        } catch {
-                            $processName = "N/A"
-                        }
-
-                        "$($resolvedRemoteName):$($connection.RemotePort) -> $($resolvedLocalName):$($connection.LocalPort), Process: $($processName)" | Out-File -FilePath $inboundLogPath -Append
-                    }
-                }
-                $outboundConnections = Get-NetTCPConnection -State Established
-                foreach ($connection in $outboundConnections) {
-                    $uniqueKey = "$($connection.LocalAddress):$($connection.LocalPort) -> $($connection.RemoteAddress):$($connection.RemotePort)"
-                    if (-not $uniqueOutbound.ContainsKey($uniqueKey)) {
-                        $uniqueOutbound[$uniqueKey] = $true
-
-                        try {
-                            $resolvedRemoteName = [System.Net.Dns]::GetHostEntry($connection.RemoteAddress).HostName
-                        } catch {
-                            $resolvedRemoteName = $connection.RemoteAddress
-                        }
-
-                        try {
-                            $resolvedLocalName = [System.Net.Dns]::GetHostEntry($connection.LocalAddress).HostName
-                        } catch {
-                            $resolvedLocalName = $connection.LocalAddress
-                        }
-
-                        try {
-                            $process = Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue
-                            $processName = $process.ProcessName
-                        } catch {
-                            $processName = "N/A"
-                        }
-
-                        "$($resolvedLocalName):$($connection.LocalPort) -> $($resolvedRemoteName):$($connection.RemotePort), Process: $($processName)" | Out-File -FilePath $outboundLogPath -Append
-                    }
-                }
-            } catch {
-                Write-Warning "Error on $serverName: $($_.Exception.Message)"
-            }
-            Start-Sleep -Seconds 60 # Changed to 60 seconds
-        }
-        Write-Host "Network capture on $serverName completed."
+    Write-Host "Starting network monitoring on $ServerName"
+    
+    # Create log directories if they don't exist
+    $logDir = ".\NetworkLogs"
+    if (-not (Test-Path $logDir)) {
+        New-Item -Path $logDir -ItemType Directory -Force | Out-Null
     }
 
-    $job = Invoke-Command -ComputerName $server -ScriptBlock $scriptBlock -ArgumentList $server, $runTimeMinutes, $logDirectory -AsJob
-    $jobs += $job
+    # Create CSV files for inbound and outbound traffic
+    $inboundLogFile = "$logDir\${ServerName}_inbound.csv"
+    $outboundLogFile = "$logDir\${ServerName}_outbound.csv"
+    
+    # Initialize hash tables to track unique connections
+    $inboundConnections = @{}
+    $outboundConnections = @{}
+    
+    # Add CSV headers if files don't exist
+    if (-not (Test-Path $inboundLogFile)) {
+        "Timestamp,Source,Destination,Process" | Out-File -FilePath $inboundLogFile -Encoding utf8
+    }
+    
+    if (-not (Test-Path $outboundLogFile)) {
+        "Timestamp,Source,Destination,Process" | Out-File -FilePath $outboundLogFile -Encoding utf8
+    }
+    
+    # Set monitoring duration (1 hour)
+    $endTime = (Get-Date).AddHours(1)
+    
+    while ((Get-Date) -lt $endTime) {
+        try {
+            # If monitoring a remote server, use Invoke-Command
+            if ($ServerName -ne $env:COMPUTERNAME) {
+                $connections = Invoke-Command -ComputerName $ServerName -ScriptBlock {
+                    Get-NetTCPConnection | Select-Object LocalAddress, LocalPort, RemoteAddress, RemotePort, OwningProcess, State
+                }
+            }
+            else {
+                # For local server
+                $connections = Get-NetTCPConnection | Select-Object LocalAddress, LocalPort, RemoteAddress, RemotePort, OwningProcess, State
+            }
+            
+            $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            
+            # Process each connection
+            foreach ($conn in $connections) {
+                # Skip loopback addresses and connections in listening state
+                if (($conn.RemoteAddress -eq "0.0.0.0" -or $conn.RemoteAddress -eq "::" -or $conn.RemoteAddress -eq "127.0.0.1" -or $conn.RemoteAddress -eq "::1") -or 
+                    ($conn.State -eq "Listen")) {
+                    continue
+                }
+                
+                # Get process name
+                try {
+                    if ($ServerName -ne $env:COMPUTERNAME) {
+                        $processInfo = Invoke-Command -ComputerName $ServerName -ScriptBlock {
+                            param($pid)
+                            $process = Get-Process -Id $pid -ErrorAction SilentlyContinue
+                            if ($process) { return $process.Name }
+                            else { return "NA" }
+                        } -ArgumentList $conn.OwningProcess
+                    }
+                    else {
+                        $process = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+                        $processInfo = if ($process) { $process.Name } else { "NA" }
+                    }
+                }
+                catch {
+                    $processInfo = "NA"
+                }
+                
+                # Resolve IP addresses to hostnames
+                $remoteHostname = Resolve-IPAddress -IPAddress $conn.RemoteAddress
+                $localHostname = Resolve-IPAddress -IPAddress $conn.LocalAddress
+                
+                # Format connection details
+                $localEndpoint = "${localHostname}:$($conn.LocalPort)"
+                $remoteEndpoint = "${remoteHostname}:$($conn.RemotePort)"
+                
+                # For established connections, determine direction and log accordingly
+                if ($conn.State -eq "Established") {
+                    # Outbound connections (local process initiated)
+                    $outboundKey = "$localEndpoint-$remoteEndpoint-$processInfo"
+                    if (-not $outboundConnections.ContainsKey($outboundKey)) {
+                        # Log new outbound connection
+                        $outboundConnections[$outboundKey] = $true
+                        "$timestamp,$localEndpoint,$remoteEndpoint,$processInfo" | Out-File -FilePath $outboundLogFile -Append -Encoding utf8
+                    }
+                    
+                    # Inbound connections (remote process initiated)
+                    $inboundKey = "$remoteEndpoint-$localEndpoint-$processInfo"
+                    if (-not $inboundConnections.ContainsKey($inboundKey)) {
+                        # Log new inbound connection
+                        $inboundConnections[$inboundKey] = $true
+                        "$timestamp,$remoteEndpoint,$localEndpoint,$processInfo" | Out-File -FilePath $inboundLogFile -Append -Encoding utf8
+                    }
+                }
+            }
+            
+            Write-Host "$(Get-Date -Format 'HH:mm:ss') - Logged network connections on $ServerName"
+        }
+        catch {
+            Write-Host "Error monitoring $ServerName: $_"
+        }
+        
+        # Wait for 1 minute before next check
+        Start-Sleep -Seconds 60
+    }
+    
+    Write-Host "Completed network monitoring on $ServerName"
 }
 
-Write-Host "Waiting for all network captures to complete..."
-Wait-Job -Job $jobs | Out-Null
-Write-Host "All network captures completed."
+# Main script execution
+Write-Host "Starting network traffic monitoring on all servers..."
+
+# Create jobs to monitor all servers simultaneously
+$jobs = @()
+
+foreach ($server in $servers) {
+    $jobs += Start-Job -ScriptBlock {
+        param($serverName)
+        
+        # Import the function definition
+        ${function:Resolve-IPAddress} = $using:function:Resolve-IPAddress
+        ${function:Monitor-NetworkTraffic} = $using:function:Monitor-NetworkTraffic
+        
+        # Execute the monitoring function
+        Monitor-NetworkTraffic -ServerName $serverName
+    } -ArgumentList $server
+}
+
+# Display progress while jobs are running
+Write-Host "Monitoring network traffic on all servers for 1 hour..."
+$runningJobs = $jobs.Count
+
+while ($runningJobs -gt 0) {
+    $completedJobs = @($jobs | Where-Object { $_.State -eq "Completed" }).Count
+    $runningJobs = $jobs.Count - $completedJobs
+    
+    Write-Host "Jobs still running: $runningJobs"
+    if ($runningJobs -gt 0) {
+        Start-Sleep -Seconds 60
+    }
+}
+
+# Get job results
+foreach ($job in $jobs) {
+    Receive-Job -Job $job
+    Remove-Job -Job $job
+}
+
+Write-Host "Network monitoring completed for all servers."
+Write-Host "Log files are available in the NetworkLogs directory."
