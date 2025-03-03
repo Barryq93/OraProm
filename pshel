@@ -47,7 +47,14 @@ foreach ($server in $servers) {
                             $resolvedLocalName = $connection.LocalAddress
                         }
 
-                        "$($resolvedRemoteName):$($connection.RemotePort) -> $($resolvedLocalName):$($connection.LocalPort), PID: $($connection.OwningProcess)" | Out-File -FilePath $inboundLogPath -Append
+                        try {
+                            $process = Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue
+                            $processName = $process.ProcessName
+                        } catch {
+                            $processName = "N/A"
+                        }
+
+                        "$($resolvedRemoteName):$($connection.RemotePort) -> $($resolvedLocalName):$($connection.LocalPort), Process: $($processName)" | Out-File -FilePath $inboundLogPath -Append
                     }
                 }
                 $outboundConnections = Get-NetTCPConnection -State Established
@@ -68,7 +75,14 @@ foreach ($server in $servers) {
                             $resolvedLocalName = $connection.LocalAddress
                         }
 
-                        "$($resolvedLocalName):$($connection.LocalPort) -> $($resolvedRemoteName):$($connection.RemotePort), PID: $($connection.OwningProcess)" | Out-File -FilePath $outboundLogPath -Append
+                        try {
+                            $process = Get-Process -Id $connection.OwningProcess -ErrorAction SilentlyContinue
+                            $processName = $process.ProcessName
+                        } catch {
+                            $processName = "N/A"
+                        }
+
+                        "$($resolvedLocalName):$($connection.LocalPort) -> $($resolvedRemoteName):$($connection.RemotePort), Process: $($processName)" | Out-File -FilePath $outboundLogPath -Append
                     }
                 }
             } catch {
