@@ -13,43 +13,48 @@ $servers = @(
     "Server7"
 )
 
-# Function to resolve IP address to hostname
-function Resolve-IPAddress {
-    param (
-        [string]$IPAddress
+# Create log directories if they don't exist
+$logDir = ".\NetworkLogs"
+if (-not (Test-Path $logDir)) {
+    New-Item -Path $logDir -ItemType Directory -Force | Out-Null
+}
+
+# Main script to run on all servers
+$scriptBlock = {
+    param(
+        [string]$ServerName,
+        [string]$LogDir
     )
     
-    try {
-        $result = nslookup $IPAddress 2>$null
-        if ($result -match "Name:\s+(.+)") {
-            return $Matches[1].Trim()
+    Write-Host "Starting network monitoring on $ServerName"
+    
+    # Function to resolve IP address to hostname (defined within the scriptblock)
+    function Resolve-HostName {
+        param(
+            [string]$IPAddress
+        )
+        
+        if ($IPAddress -eq "0.0.0.0" -or $IPAddress -eq "::" -or $IPAddress -eq "127.0.0.1" -or $IPAddress -eq "::1") {
+            return "localhost"
         }
-        else {
+        
+        try {
+            $result = nslookup $IPAddress 2>$null
+            if ($result -match "Name:\s+(.+)") {
+                return $Matches[1].Trim()
+            }
+            else {
+                return $IPAddress
+            }
+        }
+        catch {
             return $IPAddress
         }
     }
-    catch {
-        return $IPAddress
-    }
-}
-
-# Function to monitor network traffic on a server
-function Monitor-NetworkTraffic {
-    param (
-        [string]$ServerName
-    )
-
-    Write-Host "Starting network monitoring on $ServerName"
     
-    # Create log directories if they don't exist
-    $logDir = ".\NetworkLogs"
-    if (-not (Test-Path $logDir)) {
-        New-Item -Path $logDir -ItemType Directory -Force | Out-Null
-    }
-
     # Create CSV files for inbound and outbound traffic
-    $inboundLogFile = "$logDir\${ServerName}_inbound.csv"
-    $outboundLogFile = "$logDir\${ServerName}_outbound.csv"
+    $inboundLogFile = "$LogDir\${ServerName}_inbound.csv"
+    $outboundLogFile = "$LogDir\${ServerName}_outbound.csv"
     
     # Initialize hash tables to track unique connections
     $inboundConnections = @{}
@@ -69,49 +74,31 @@ function Monitor-NetworkTraffic {
     
     while ((Get-Date) -lt $endTime) {
         try {
-            # If monitoring a remote server, use Invoke-Command
-            if ($ServerName -ne $env:COMPUTERNAME) {
-                $connections = Invoke-Command -ComputerName $ServerName -ScriptBlock {
-                    Get-NetTCPConnection | Select-Object LocalAddress, LocalPort, RemoteAddress, RemotePort, OwningProcess, State
-                }
-            }
-            else {
-                # For local server
-                $connections = Get-NetTCPConnection | Select-Object LocalAddress, LocalPort, RemoteAddress, RemotePort, OwningProcess, State
-            }
+            $connections = Get-NetTCPConnection | 
+                Where-Object { $_.State -ne "Listen" -and $_.RemoteAddress -ne "0.0.0.0" -and $_.RemoteAddress -ne "::" } |
+                Select-Object LocalAddress, LocalPort, RemoteAddress, RemotePort, OwningProcess, State
             
             $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
             
             # Process each connection
             foreach ($conn in $connections) {
-                # Skip loopback addresses and connections in listening state
-                if (($conn.RemoteAddress -eq "0.0.0.0" -or $conn.RemoteAddress -eq "::" -or $conn.RemoteAddress -eq "127.0.0.1" -or $conn.RemoteAddress -eq "::1") -or 
-                    ($conn.State -eq "Listen")) {
+                # Skip loopback addresses
+                if ($conn.RemoteAddress -eq "127.0.0.1" -or $conn.RemoteAddress -eq "::1") {
                     continue
                 }
                 
                 # Get process name
                 try {
-                    if ($ServerName -ne $env:COMPUTERNAME) {
-                        $processInfo = Invoke-Command -ComputerName $ServerName -ScriptBlock {
-                            param($pid)
-                            $process = Get-Process -Id $pid -ErrorAction SilentlyContinue
-                            if ($process) { return $process.Name }
-                            else { return "NA" }
-                        } -ArgumentList $conn.OwningProcess
-                    }
-                    else {
-                        $process = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
-                        $processInfo = if ($process) { $process.Name } else { "NA" }
-                    }
+                    $process = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
+                    $processInfo = if ($process) { $process.Name } else { "NA" }
                 }
                 catch {
                     $processInfo = "NA"
                 }
                 
                 # Resolve IP addresses to hostnames
-                $remoteHostname = Resolve-IPAddress -IPAddress $conn.RemoteAddress
-                $localHostname = Resolve-IPAddress -IPAddress $conn.LocalAddress
+                $remoteHostname = Resolve-HostName -IPAddress $conn.RemoteAddress
+                $localHostname = Resolve-HostName -IPAddress $conn.LocalAddress
                 
                 # Format connection details
                 $localEndpoint = "${localHostname}:$($conn.LocalPort)"
@@ -150,23 +137,33 @@ function Monitor-NetworkTraffic {
     Write-Host "Completed network monitoring on $ServerName"
 }
 
-# Main script execution
+# The server access script that will be executed from Server1
+$serverAccessScript = {
+    param(
+        [string]$ServerName,
+        [string]$LogDir
+    )
+    
+    Write-Host "Initiating monitoring on $ServerName from control server"
+    
+    if ($ServerName -eq $env:COMPUTERNAME) {
+        # Running locally
+        & $using:scriptBlock -ServerName $ServerName -LogDir $LogDir
+    }
+    else {
+        # Running on remote server
+        Invoke-Command -ComputerName $ServerName -ScriptBlock $using:scriptBlock -ArgumentList $ServerName, $LogDir
+    }
+}
+
+# Main execution
 Write-Host "Starting network traffic monitoring on all servers..."
 
 # Create jobs to monitor all servers simultaneously
 $jobs = @()
 
 foreach ($server in $servers) {
-    $jobs += Start-Job -ScriptBlock {
-        param($serverName)
-        
-        # Import the function definition
-        ${function:Resolve-IPAddress} = $using:function:Resolve-IPAddress
-        ${function:Monitor-NetworkTraffic} = $using:function:Monitor-NetworkTraffic
-        
-        # Execute the monitoring function
-        Monitor-NetworkTraffic -ServerName $serverName
-    } -ArgumentList $server
+    $jobs += Start-Job -ScriptBlock $serverAccessScript -ArgumentList $server, $logDir
 }
 
 # Display progress while jobs are running
