@@ -11,7 +11,7 @@ if (!(Test-Path -Path $logDirectory -PathType Container)) {
 $jobs = @() # Array to store job objects
 
 foreach ($server in $servers) {
-    $job = Start-Job -ScriptBlock {
+    $scriptBlock = {
         param($serverName, $runMinutes, $logDir)
 
         $inboundLogPath = Join-Path $logDir "$($serverName)_inbound.log"
@@ -88,10 +88,12 @@ foreach ($server in $servers) {
             } catch {
                 Write-Warning "Error on $serverName: $($_.Exception.Message)"
             }
-            Start-Sleep -Seconds 5
+            Start-Sleep -Seconds 60 # Changed to 60 seconds
         }
         Write-Host "Network capture on $serverName completed."
-    } -ArgumentList $server, $runTimeMinutes, $logDirectory
+    }
+
+    $job = Invoke-Command -ComputerName $server -ScriptBlock $scriptBlock -ArgumentList $server, $runTimeMinutes, $logDirectory -AsJob
     $jobs += $job
 }
 
