@@ -1,0 +1,65 @@
+# Configuration
+$servers = "Server1", "Server2", "Server3", "Server4", "Server5", "Server6" # Replace with your server names
+$runTimeMinutes = 60 # Run for 1 hour
+$logDirectory = "C:\NetworkLogs" # Adjust the log directory as needed
+
+# Ensure log directory exists
+if (!(Test-Path -Path $logDirectory -PathType Container)) {
+    New-Item -ItemType Directory -Path $logDirectory | Out-Null
+}
+
+foreach ($server in $servers) {
+
+    $inboundLogPath = Join-Path $logDirectory "$($server)_inbound.log"
+    $outboundLogPath = Join-Path $logDirectory "$($server)_outbound.log"
+
+    # Clear existing logs (optional, remove if you want to append)
+    if (Test-Path $inboundLogPath) { Clear-Content $inboundLogPath }
+    if (Test-Path $outboundLogPath) { Clear-Content $outboundLogPath }
+
+    # Define unique connection tracking hashtables for each server and direction.
+    $uniqueInbound = @{}
+    $uniqueOutbound = @{}
+
+    # Define the end time
+    $endTime = (Get-Date).AddMinutes($runTimeMinutes)
+
+    # Begin Logging
+    Write-Host "Starting network capture on $server..."
+
+    while ((Get-Date) -lt $endTime) {
+
+        try{
+
+            # Inbound Connections
+            $inboundConnections = Get-NetTCPConnection -State Established | Where-Object {$_.RemoteAddress -ne "127.0.0.1"} | Where-Object {$_.State -eq "Established"} | Where-Object {$_.RemoteAddress -ne $server}
+
+            foreach ($connection in $inboundConnections) {
+                $uniqueKey = "$($connection.RemoteAddress):$($connection.RemotePort) -> $($connection.LocalAddress):$($connection.LocalPort)"
+
+                if (-not $uniqueInbound.ContainsKey($uniqueKey)) {
+                    $uniqueInbound[$uniqueKey] = $true # Mark as seen
+                    "$($connection.RemoteAddress):$($connection.RemotePort) -> $($connection.LocalAddress):$($connection.LocalPort), PID: $($connection.OwningProcess)" | Out-File -FilePath $inboundLogPath -Append
+                }
+            }
+
+            # Outbound Connections
+            $outboundConnections = Get-NetTCPConnection -State Established | Where-Object {$_.RemoteAddress -ne "127.0.0.1"} | Where-Object {$_.State -eq "Established"} | Where-Object {$_.RemoteAddress -ne $server}
+
+            foreach ($connection in $outboundConnections) {
+                $uniqueKey = "$($connection.LocalAddress):$($connection.LocalPort) -> $($connection.RemoteAddress):$($connection.RemotePort)"
+
+                if (-not $uniqueOutbound.ContainsKey($uniqueKey)) {
+                    $uniqueOutbound[$uniqueKey] = $true # Mark as seen
+                    "$($connection.LocalAddress):$($connection.LocalPort) -> $($connection.RemoteAddress):$($connection.RemotePort), PID: $($connection.OwningProcess)" | Out-File -FilePath $outboundLogPath -Append
+                }
+            }
+        }
+        catch{
+            Write-Warning "Error on $server: $($_.Exception.Message)"
+        }
+        Start-Sleep -Seconds 5 # Adjust the interval as needed.
+    }
+    Write-Host "Network capture on $server completed."
+}
+Write-Host "All network captures completed."
