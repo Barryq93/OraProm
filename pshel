@@ -8,9 +8,9 @@ if (-not (Test-Path $outputPath)) {
     New-Item -Path $outputPath -ItemType Directory | Out-Null
 }
 
-# Initialize CSV files with headers (added Application column)
-"InboundTime,SourceIP,SourceHost,DestIP,DestPort,Protocol,Server,Application" | Out-File "$outputPath\server_inbound.csv" -Encoding UTF8
-"OutboundTime,SourceIP,SourcePort,DestIP,DestHost,Protocol,Server,Application" | Out-File "$outputPath\server_outbound.csv" -Encoding UTF8
+# Initialize CSV files with headers
+"InboundTime,SourceIP,SourceHost,DestIP,DestHost,DestPort,Protocol,Server,Application" | Out-File "$outputPath\server_inbound.csv" -Encoding UTF8
+"OutboundTime,SourceIP,SourceHost,SourcePort,DestIP,DestHost,Protocol,Server,Application" | Out-File "$outputPath\server_outbound.csv" -Encoding UTF8
 
 # Function to resolve IP to hostname with cache
 $dnsCache = @{}
@@ -64,14 +64,16 @@ while ((Get-Date) -lt $endTime) {
                 if ($conn.LocalAddress -ne "0.0.0.0" -and $conn.LocalAddress -ne "::") {
                     # Inbound connection
                     $sourceHost = Resolve-Hostname $conn.RemoteAddress
-                    $logEntry = "$timestamp,$($conn.RemoteAddress),$sourceHost,$($conn.LocalAddress),$($conn.LocalPort),TCP,$server,$($conn.ProcessName)"
+                    $destHost = Resolve-Hostname $conn.LocalAddress
+                    $logEntry = "$timestamp,$($conn.RemoteAddress),$sourceHost,$($conn.LocalAddress),$destHost,$($conn.LocalPort),TCP,$server,$($conn.ProcessName)"
                     $logEntry | Out-File "$outputPath\server_inbound.csv" -Append -Encoding UTF8
                 }
                 
                 if ($conn.RemoteAddress -ne "0.0.0.0" -and $conn.RemoteAddress -ne "::") {
                     # Outbound connection
+                    $sourceHost = Resolve-Hostname $conn.LocalAddress
                     $destHost = Resolve-Hostname $conn.RemoteAddress
-                    $logEntry = "$timestamp,$($conn.LocalAddress),$($conn.LocalPort),$($conn.RemoteAddress),$destHost,TCP,$server,$($conn.ProcessName)"
+                    $logEntry = "$timestamp,$($conn.LocalAddress),$sourceHost,$($conn.LocalPort),$($conn.RemoteAddress),$destHost,TCP,$server,$($conn.ProcessName)"
                     $logEntry | Out-File "$outputPath\server_outbound.csv" -Append -Encoding UTF8
                 }
             }
