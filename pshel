@@ -20,9 +20,9 @@ function Resolve-Hostname($ip) {
     }
     try {
         $hostname = (nslookup $ip 2>$null | Select-String "Name:" | Select-Object -First 1).ToString().Split(":")[1].Trim()
-        if (-not $hostname) { $hostname = "Unknown" }
+        if (-not $hostname) { $hostname = $ip }
     } catch {
-        $hostname = "Unknown"
+        $hostname = $ip
     }
     $dnsCache[$ip] = $hostname
     return $hostname
@@ -42,11 +42,14 @@ while ((Get-Date) -lt $endTime) {
             $connections = Invoke-Command -ComputerName $server -ScriptBlock {
                 $tcpConnections = Get-NetTCPConnection -ErrorAction SilentlyContinue
                 $processes = Get-Process -ErrorAction SilentlyContinue | Select-Object Id, ProcessName
+                $results = @()
                 foreach ($conn in $tcpConnections) {
                     $process = $processes | Where-Object { $_.Id -eq $conn.OwningProcess }
-                    $conn | Add-Member -NotePropertyName "ProcessName" -NotePropertyValue ($process.ProcessName ?? "Unknown")
-                    $conn
+                    $processName = if ($process.ProcessName) { $process.ProcessName } else { "PID_$($conn.OwningProcess)" }
+                    $conn | Add-Member -NotePropertyName "ProcessName" -NotePropertyValue $processName -PassThru
+                    $results += $conn
                 }
+                return $results
             }
 
             foreach ($conn in $connections) {
