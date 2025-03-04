@@ -10,7 +10,7 @@ if (-not (Test-Path $outputPath)) {
 
 # Initialize CSV files with headers
 "InboundTime,SourceIP,SourceHost,DestIP,DestHost,DestPort,Protocol,Server,Application" | Out-File "$outputPath\server_inbound.csv" -Encoding UTF8
-"OutboundTime,SourceIP,SourceHost,SourcePort,DestIP,DestHost,Protocol,Server,Application" | Out-File "$outputPath\server_outbound.csv" -Encoding UTF8
+"OutboundTime,SourceIP,SourceHost,SourcePort,DestIP,DestHost,DestPort,Protocol,Server,Application" | Out-File "$outputPath\server_outbound.csv" -Encoding UTF8
 
 # Function to resolve IP to hostname with cache
 $dnsCache = @{}
@@ -73,7 +73,7 @@ while ((Get-Date) -lt $endTime) {
                     # Outbound connection
                     $sourceHost = Resolve-Hostname $conn.LocalAddress
                     $destHost = Resolve-Hostname $conn.RemoteAddress
-                    $logEntry = "$timestamp,$($conn.LocalAddress),$sourceHost,$($conn.LocalPort),$($conn.RemoteAddress),$destHost,TCP,$server,$($conn.ProcessName)"
+                    $logEntry = "$timestamp,$($conn.LocalAddress),$sourceHost,$($conn.LocalPort),$($conn.RemoteAddress),$destHost,$($conn.RemotePort),TCP,$server,$($conn.ProcessName)"
                     $logEntry | Out-File "$outputPath\server_outbound.csv" -Append -Encoding UTF8
                 }
             }
