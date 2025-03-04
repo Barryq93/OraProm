@@ -39,42 +39,68 @@ while ((Get-Date) -lt $endTime) {
     foreach ($server in $servers) {
         try {
             # Get current network connections and process info
-            $connections = Invoke-Command -ComputerName $server -ScriptBlock {
+            $endpoints = Invoke-Command -ComputerName $server -ScriptBlock {
                 $tcpConnections = Get-NetTCPConnection -ErrorAction SilentlyContinue
+                $udpEndpoints = Get-NetUDPEndpoint -ErrorAction SilentlyContinue
                 $processes = Get-Process -ErrorAction SilentlyContinue | Select-Object Id, ProcessName
                 $results = @()
+
+                # Process TCP connections
                 foreach ($conn in $tcpConnections) {
                     $process = $processes | Where-Object { $_.Id -eq $conn.OwningProcess }
                     $processName = if ($process.ProcessName) { $process.ProcessName } else { "PID_$($conn.OwningProcess)" }
                     $conn | Add-Member -NotePropertyName "ProcessName" -NotePropertyValue $processName -PassThru
+                    $conn | Add-Member -NotePropertyName "Protocol" -NotePropertyValue "TCP" -PassThru
                     $results += $conn
+                }
+
+                # Process UDP endpoints
+                foreach ($udp in $udpEndpoints) {
+                    $process = $processes | Where-Object { $_.Id -eq $udp.OwningProcess }
+                    $processName = if ($process.ProcessName) { $process.ProcessName } else { "PID_$($udp.OwningProcess)" }
+                    $udp | Add-Member -NotePropertyName "ProcessName" -NotePropertyValue $processName -PassThru
+                    $udp | Add-Member -NotePropertyName "Protocol" -NotePropertyValue "UDP" -PassThru
+                    $udp | Add-Member -NotePropertyName "RemoteAddress" -NotePropertyValue "0.0.0.0" -PassThru
+                    $udp | Add-Member -NotePropertyName "RemotePort" -NotePropertyValue 0 -PassThru
+                    $results += $udp
                 }
                 return $results
             }
 
-            foreach ($conn in $connections) {
+            foreach ($endpoint in $endpoints) {
                 # Skip loopback connections
-                if ($conn.LocalAddress -eq "127.0.0.1" -or $conn.RemoteAddress -eq "127.0.0.1") {
+                if ($endpoint.LocalAddress -eq "127.0.0.1" -or $endpoint.RemoteAddress -eq "127.0.0.1") {
                     continue
                 }
 
                 $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
                 
-                # Determine if connection is inbound or outbound
-                if ($conn.LocalAddress -ne "0.0.0.0" -and $conn.LocalAddress -ne "::") {
-                    # Inbound connection
-                    $sourceHost = Resolve-Hostname $conn.RemoteAddress
-                    $destHost = Resolve-Hostname $conn.LocalAddress
-                    $logEntry = "$timestamp,$($conn.RemoteAddress),$sourceHost,$($conn.LocalAddress),$destHost,$($conn.LocalPort),TCP,$server,$($conn.ProcessName)"
-                    $logEntry | Out-File "$outputPath\server_inbound.csv" -Append -Encoding UTF8
+                # Handle TCP and UDP differently
+                if ($endpoint.Protocol -eq "TCP") {
+                    # TCP Inbound
+                    if ($endpoint.LocalAddress -ne "0.0.0.0" -and $endpoint.LocalAddress -ne "::") {
+                        $sourceHost = Resolve-Hostname $endpoint.RemoteAddress
+                        $destHost = Resolve-Hostname $endpoint.LocalAddress
+                        $logEntry = "$timestamp,$($endpoint.RemoteAddress),$sourceHost,$($endpoint.LocalAddress),$destHost,$($endpoint.LocalPort),TCP,$server,$($endpoint.ProcessName)"
+                        $logEntry | Out-File "$outputPath\server_inbound.csv" -Append -Encoding UTF8
+                    }
+                    
+                    # TCP Outbound
+                    if ($endpoint.RemoteAddress -ne "0.0.0.0" -and $endpoint.RemoteAddress -ne "::") {
+                        $sourceHost = Resolve-Hostname $endpoint.LocalAddress
+                        $destHost = Resolve-Hostname $endpoint.RemoteAddress
+                        $logEntry = "$timestamp,$($endpoint.LocalAddress),$sourceHost,$($endpoint.LocalPort),$($endpoint.RemoteAddress),$destHost,$($endpoint.RemotePort),TCP,$server,$($endpoint.ProcessName)"
+                        $logEntry | Out-File "$outputPath\server_outbound.csv" -Append -Encoding UTF8
+                    }
                 }
-                
-                if ($conn.RemoteAddress -ne "0.0.0.0" -and $conn.RemoteAddress -ne "::") {
-                    # Outbound connection
-                    $sourceHost = Resolve-Hostname $conn.LocalAddress
-                    $destHost = Resolve-Hostname $conn.RemoteAddress
-                    $logEntry = "$timestamp,$($conn.LocalAddress),$sourceHost,$($conn.LocalPort),$($conn.RemoteAddress),$destHost,$($conn.RemotePort),TCP,$server,$($conn.ProcessName)"
-                    $logEntry | Out-File "$outputPath\server_outbound.csv" -Append -Encoding UTF8
+                elseif ($endpoint.Protocol -eq "UDP") {
+                    # UDP is typically outbound unless specifically bound to receive
+                    if ($endpoint.LocalAddress -ne "0.0.0.0" -and $endpoint.LocalAddress -ne "::") {
+                        $sourceHost = Resolve-Hostname $endpoint.LocalAddress
+                        $destHost = "Unknown"  # UDP doesn't provide destination IP
+                        $logEntry = "$timestamp,$($endpoint.LocalAddress),$sourceHost,$($endpoint.LocalPort),0.0.0.0,$destHost,0,UDP,$server,$($endpoint.ProcessName)"
+                        $logEntry | Out-File "$outputPath\server_outbound.csv" -Append -Encoding UTF8
+                    }
                 }
             }
         }
