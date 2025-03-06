@@ -1,116 +1,62 @@
-# Define server list and output paths
-$servers = @("server1", "server2", "server3", "server4", "server5", "server6", "server7")
-$outputPath = "C:\NetworkLogs" # Adjust this path as needed
-$duration = 3600 # 1 hour in seconds
+#!/bin/bash
 
-# Create output directory if it doesn't exist
-if (-not (Test-Path $outputPath)) {
-    New-Item -Path $outputPath -ItemType Directory | Out-Null
+# Configuration
+SOURCE_DIR="/path/to/FileShare"  # Replace with your FileShare path
+OLD_USER="a"                     # Current owner
+NEW_USER="b"                     # New owner
+OLD_GROUP="groupa"               # Current group (replace with actual group)
+NEW_GROUP="groupb"               # New group (replace with actual group)
+MAX_JOBS=5                       # Number of concurrent jobs
+LOG_FILE="/var/log/chown_fileshare.log"
+TOTAL_DIRS=1000                  # Total directories (01 to 1000)
+RANGE_SIZE=100                   # Process in batches of 100 dirs
+
+# Check if directory exists
+[ ! -d "$SOURCE_DIR" ] && { echo "Error: $SOURCE_DIR not found"; exit 1; }
+
+# Ensure log file is writable
+touch "$LOG_FILE" 2>/dev/null || { echo "Error: Cannot write to $LOG_FILE"; exit 1; }
+
+# Function to chown a single directory
+chown_dir() {
+    dir="$1"
+    start_time=$(date +%s)
+    echo "[$(date)] Starting $dir" >> "$LOG_FILE"
+
+    # Perform chown for both user and group
+    chown -R "$NEW_USER:$NEW_GROUP" "$SOURCE_DIR/$dir" 2>>"$LOG_FILE"
+    if [ $? -eq 0 ]; then
+        end_time=$(date +%s)
+        elapsed=$((end_time - start_time))
+        echo "[$(date)] Completed $dir (user: $NEW_USER, group: $NEW_GROUP) in ${elapsed}s" >> "$LOG_FILE"
+    else
+        echo "[$(date)] Error during chown for $dir" >> "$LOG_FILE"
+    fi
 }
 
-# Initialize CSV files with headers
-"InboundTime,SourceIP,SourceHost,DestIP,DestHost,DestPort,Protocol,Server,Application" | Out-File "$outputPath\server_inbound.csv" -Encoding UTF8
-"OutboundTime,SourceIP,SourceHost,SourcePort,DestIP,DestHost,DestPort,Protocol,Server,Application" | Out-File "$outputPath\server_outbound.csv" -Encoding UTF8
+# Process directories in ranges with 5 parallel jobs
+for ((start=1; start<=TOTAL_DIRS; start+=RANGE_SIZE)); do
+    end=$((start + RANGE_SIZE - 1))
+    [ $end -gt $TOTAL_DIRS ] && end=$TOTAL_DIRS
 
-# Function to resolve IP to hostname with cache
-$dnsCache = @{}
-function Resolve-Hostname($ip) {
-    if ($dnsCache.ContainsKey($ip)) {
-        return $dnsCache[$ip]
-    }
-    try {
-        $hostname = (nslookup $ip 2>$null | Select-String "Name:" | Select-Object -First 1).ToString().Split(":")[1].Trim()
-        if (-not $hostname) { $hostname = $ip }
-    } catch {
-        $hostname = $ip
-    }
-    $dnsCache[$ip] = $hostname
-    return $hostname
-}
+    echo "Processing range $start to $end with $MAX_JOBS jobs"
 
-# Start time tracking
-$startTime = Get-Date
-$endTime = $startTime.AddSeconds($duration)
+    # Loop through directories in the current range
+    for dir in $(seq -f "%02g" "$start" "$end"); do
+        # Run chown_dir in the background
+        chown_dir "$dir" &
 
-Write-Host "Starting network monitoring for 1 hour across $($servers.Count) servers..."
+        # Limit to MAX_JOBS concurrent processes
+        while [ $(jobs -r | wc -l) -ge "$MAX_JOBS" ]; do
+            sleep 1
+        done
+    done
 
-# Main monitoring loop
-while ((Get-Date) -lt $endTime) {
-    foreach ($server in $servers) {
-        try {
-            # Get current network connections and process info
-            $endpoints = Invoke-Command -ComputerName $server -ScriptBlock {
-                $tcpConnections = Get-NetTCPConnection -ErrorAction SilentlyContinue
-                $udpEndpoints = Get-NetUDPEndpoint -ErrorAction SilentlyContinue
-                $processes = Get-Process -ErrorAction SilentlyContinue | Select-Object Id, ProcessName
-                $results = @()
+    # Wait for all background jobs in this range to finish
+    wait
 
-                # Process TCP connections
-                foreach ($conn in $tcpConnections) {
-                    $process = $processes | Where-Object { $_.Id -eq $conn.OwningProcess }
-                    $processName = if ($process.ProcessName) { $process.ProcessName } else { "PID_$($conn.OwningProcess)" }
-                    $conn | Add-Member -NotePropertyName "ProcessName" -NotePropertyValue $processName -PassThru
-                    $conn | Add-Member -NotePropertyName "Protocol" -NotePropertyValue "TCP" -PassThru
-                    $results += $conn
-                }
+    # Short sleep between ranges
+    sleep 10
+done
 
-                # Process UDP endpoints
-                foreach ($udp in $udpEndpoints) {
-                    $process = $processes | Where-Object { $_.Id -eq $udp.OwningProcess }
-                    $processName = if ($process.ProcessName) { $process.ProcessName } else { "PID_$($udp.OwningProcess)" }
-                    $udp | Add-Member -NotePropertyName "ProcessName" -NotePropertyValue $processName -PassThru
-                    $udp | Add-Member -NotePropertyName "Protocol" -NotePropertyValue "UDP" -PassThru
-                    $udp | Add-Member -NotePropertyName "RemoteAddress" -NotePropertyValue "0.0.0.0" -PassThru
-                    $udp | Add-Member -NotePropertyName "RemotePort" -NotePropertyValue 0 -PassThru
-                    $results += $udp
-                }
-                return $results
-            }
-
-            foreach ($endpoint in $endpoints) {
-                # Skip loopback connections
-                if ($endpoint.LocalAddress -eq "127.0.0.1" -or $endpoint.RemoteAddress -eq "127.0.0.1") {
-                    continue
-                }
-
-                $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-                
-                # Handle TCP and UDP differently
-                if ($endpoint.Protocol -eq "TCP") {
-                    # TCP Inbound
-                    if ($endpoint.LocalAddress -ne "0.0.0.0" -and $endpoint.LocalAddress -ne "::") {
-                        $sourceHost = Resolve-Hostname $endpoint.RemoteAddress
-                        $destHost = Resolve-Hostname $endpoint.LocalAddress
-                        $logEntry = "$timestamp,$($endpoint.RemoteAddress),$sourceHost,$($endpoint.LocalAddress),$destHost,$($endpoint.LocalPort),TCP,$server,$($endpoint.ProcessName)"
-                        $logEntry | Out-File "$outputPath\server_inbound.csv" -Append -Encoding UTF8
-                    }
-                    
-                    # TCP Outbound
-                    if ($endpoint.RemoteAddress -ne "0.0.0.0" -and $endpoint.RemoteAddress -ne "::") {
-                        $sourceHost = Resolve-Hostname $endpoint.LocalAddress
-                        $destHost = Resolve-Hostname $endpoint.RemoteAddress
-                        $logEntry = "$timestamp,$($endpoint.LocalAddress),$sourceHost,$($endpoint.LocalPort),$($endpoint.RemoteAddress),$destHost,$($endpoint.RemotePort),TCP,$server,$($endpoint.ProcessName)"
-                        $logEntry | Out-File "$outputPath\server_outbound.csv" -Append -Encoding UTF8
-                    }
-                }
-                elseif ($endpoint.Protocol -eq "UDP") {
-                    # UDP is typically outbound unless specifically bound to receive
-                    if ($endpoint.LocalAddress -ne "0.0.0.0" -and $endpoint.LocalAddress -ne "::") {
-                        $sourceHost = Resolve-Hostname $endpoint.LocalAddress
-                        $destHost = "Unknown"  # UDP doesn't provide destination IP
-                        $logEntry = "$timestamp,$($endpoint.LocalAddress),$sourceHost,$($endpoint.LocalPort),0.0.0.0,$destHost,0,UDP,$server,$($endpoint.ProcessName)"
-                        $logEntry | Out-File "$outputPath\server_outbound.csv" -Append -Encoding UTF8
-                    }
-                }
-            }
-        }
-        catch {
-            Write-Warning "Error processing $server : $_"
-        }
-    }
-    
-    # Wait 30 seconds before next iteration
-    Start-Sleep -Seconds 30
-}
-
-Write-Host "Network monitoring completed. Logs saved to $outputPath"
+echo "Chown completed. Check $LOG_FILE for details."
