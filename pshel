@@ -1,62 +1,31 @@
-#!/bin/bash
-
-# Configuration
-SOURCE_DIR="/path/to/FileShare"  # Replace with your FileShare path
-OLD_USER="a"                     # Current owner
-NEW_USER="b"                     # New owner
-OLD_GROUP="groupa"               # Current group (replace with actual group)
-NEW_GROUP="groupb"               # New group (replace with actual group)
-MAX_JOBS=5                       # Number of concurrent jobs
-LOG_FILE="/var/log/chown_fileshare.log"
-TOTAL_DIRS=1000                  # Total directories (01 to 1000)
-RANGE_SIZE=100                   # Process in batches of 100 dirs
-
-# Check if directory exists
-[ ! -d "$SOURCE_DIR" ] && { echo "Error: $SOURCE_DIR not found"; exit 1; }
-
-# Ensure log file is writable
-touch "$LOG_FILE" 2>/dev/null || { echo "Error: Cannot write to $LOG_FILE"; exit 1; }
-
-# Function to chown a single directory
-chown_dir() {
-    dir="$1"
-    start_time=$(date +%s)
-    echo "[$(date)] Starting $dir" >> "$LOG_FILE"
-
-    # Perform chown for both user and group
-    chown -R "$NEW_USER:$NEW_GROUP" "$SOURCE_DIR/$dir" 2>>"$LOG_FILE"
-    if [ $? -eq 0 ]; then
-        end_time=$(date +%s)
-        elapsed=$((end_time - start_time))
-        echo "[$(date)] Completed $dir (user: $NEW_USER, group: $NEW_GROUP) in ${elapsed}s" >> "$LOG_FILE"
-    else
-        echo "[$(date)] Error during chown for $dir" >> "$LOG_FILE"
-    fi
-}
-
-# Process directories in ranges with 5 parallel jobs
-for ((start=1; start<=TOTAL_DIRS; start+=RANGE_SIZE)); do
-    end=$((start + RANGE_SIZE - 1))
-    [ $end -gt $TOTAL_DIRS ] && end=$TOTAL_DIRS
-
-    echo "Processing range $start to $end with $MAX_JOBS jobs"
-
-    # Loop through directories in the current range
-    for dir in $(seq -f "%02g" "$start" "$end"); do
-        # Run chown_dir in the background
-        chown_dir "$dir" &
-
-        # Limit to MAX_JOBS concurrent processes
-        while [ $(jobs -r | wc -l) -ge "$MAX_JOBS" ]; do
-            sleep 1
-        done
-    done
-
-    # Wait for all background jobs in this range to finish
-    wait
-
-    # Short sleep between ranges
-    sleep 10
-done
-
-echo "Chown completed. Check $LOG_FILE for details."
+SELECT
+    TABSCHEMA,
+    TABNAME,
+    'TABLE' AS OBJTYPE,
+    ROWS_INSERTED,
+    ROWS_DELETED,
+    ROWS_UPDATED,
+    DATA_P_READS,
+    DATA_P_WRITES,
+    STATS_TIME
+FROM
+    SYSIBMADM.SNAPTAB
+WHERE
+    DB_NAME = 'DBNAME' -- Replace with your database name
+UNION ALL
+SELECT
+    INDSCHEMA,
+    INDNAME,
+    'INDEX' AS OBJTYPE,
+    ROWS_INSERTED,
+    ROWS_DELETED,
+    ROWS_UPDATED,
+    DATA_P_READS,
+    DATA_P_WRITES,
+    STATS_TIME
+FROM
+    SYSIBMADM.SNAPINDEX
+WHERE
+    DB_NAME = 'DBNAME' -- Replace with your database name
+ORDER BY
+    TABSCHEMA, TABNAME;
