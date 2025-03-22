@@ -22,13 +22,6 @@ if [ $? -ne 0 ]; then
 fi
 echo "Connected to $DB_NAME" >> $DEBUG_FILE
 
-# Optional: Run RUNSTATS to ensure current statistics (uncomment if needed)
-# echo "Running RUNSTATS on all tables..."
-# db2 "runstats on table all with distribution and detailed indexes all" >> $DEBUG_FILE 2>&1
-# if [ $? -ne 0 ]; then
-#     echo "Warning: RUNSTATS failed. Proceeding with existing statistics." >> $DEBUG_FILE
-# fi
-
 # Run REORGCHK on all tables with current statistics
 echo "Running REORGCHK on all tables..."
 db2 "reorgchk current statistics on table all" > $OUTPUT_FILE 2>> $DEBUG_FILE
@@ -54,15 +47,15 @@ echo "Analyzing REORGCHK output and generating CSV..."
 
 # Process table section
 echo "Parsing table section..." >> $DEBUG_FILE
-grep -A 5 "Table:" $OUTPUT_FILE | grep -E "Table:|\*|^-" > $TEMP_FILE
+grep -A 5 "Table:" $OUTPUT_FILE | grep -E "Table:|\*" > $TEMP_FILE
 TABLE_COUNT=0
 while IFS= read -r line; do
+    echo "Processing line: $line" >> $DEBUG_FILE
     if [[ $line =~ ^Table:\ (.*) ]]; then
         TABLE_NAME="${BASH_REMATCH[1]}"
         REASON=""
         echo "Found table: $TABLE_NAME" >> $DEBUG_FILE
-    elif [[ $line =~ ^-.*\*[ ]* ]]; then
-        # Simplified check for any * in the stats line
+    elif [[ $line =~ .*\* ]]; then  # Match any line with an asterisk
         REASON=""
         if echo "$line" | grep -q "F1.*\*"; then REASON="$REASON *Overflow records"; fi
         if echo "$line" | grep -q "F2.*\*"; then REASON="$REASON *Space utilization"; fi
@@ -83,16 +76,16 @@ echo "Processed $TABLE_COUNT tables needing REORG" >> $DEBUG_FILE
 
 # Process index section
 echo "Parsing index section..." >> $DEBUG_FILE
-grep -A 5 "Index:" $OUTPUT_FILE | grep -E "Index:|\*|^-" > $TEMP_FILE
+grep -A 5 "Index:" $OUTPUT_FILE | grep -E "Index:|\*" > $TEMP_FILE
 INDEX_COUNT=0
 while IFS= read -r line; do
+    echo "Processing line: $line" >> $DEBUG_FILE
     if [[ $line =~ ^Index:\ (.*) ]]; then
         INDEX_NAME="${BASH_REMATCH[1]}"
         TABLE_NAME=$(echo "$INDEX_NAME" | cut -d'.' -f1-2)
         REASON=""
         echo "Found index: $INDEX_NAME" >> $DEBUG_FILE
-    elif [[ $line =~ ^-.*\*[ ]* ]]; then
-        # Simplified check for any * in the stats line
+    elif [[ $line =~ .*\* ]]; then  # Match any line with an asterisk
         REASON=""
         if echo "$line" | grep -q "F1.*\*"; then REASON="$REASON *Cardinality"; fi
         if echo "$line" | grep -q "F2.*\*"; then REASON="$REASON *Leaf pages"; fi
@@ -109,16 +102,11 @@ while IFS= read -r line; do
 done < $TEMP_FILE
 echo "Processed $INDEX_COUNT indexes needing REORG" >> $DEBUG_FILE
 
-# Cleanup temporary files
-rm -f $OUTPUT_FILE $TEMP_FILE
+# Cleanup temporary files (commented out for debugging)
+# rm -f $OUTPUT_FILE $TEMP_FILE
 
 # Disconnect from the database
 db2 terminate >> $DEBUG_FILE 2>&1
 
 echo "-------------------------------------------------------------"
-echo "Analysis complete. Results written to $CSV_FILE"
-echo "Debug log available in $DEBUG_FILE"
-echo "Tables flagged: $TABLE_COUNT, Indexes flagged: $INDEX_COUNT"
-echo "If CSV is empty, check $DEBUG_FILE for clues."
-echo "-------------------------------------------------------------"
-exit 0
+echo "Analysis complete. Results
