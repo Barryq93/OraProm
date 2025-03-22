@@ -58,25 +58,10 @@ while IFS= read -r line; do
         echo "Found table: $TABLE_NAME" >> $DEBUG_FILE
     elif [[ $line =~ .*\* ]]; then
         REASON=""
-        # Split line into fields, ignoring leading spaces
-        fields=($(echo "$line" | tr -s ' ' | sed 's/^[ ]*//'))
-        echo "Fields: ${fields[*]}" >> $DEBUG_FILE
-        # Map fields to F1-F8 (adjust based on your DB2 version's output)
-        for i in "${!fields[@]}"; do
-            if [[ "${fields[$i]}" =~ \* ]]; then
-                case $i in
-                    0) REASON="$REASON *F1 Overflow records" ;;
-                    1) REASON="$REASON *F2 Space utilization" ;;
-                    2) REASON="$REASON *F3 Fragmentation" ;;
-                    3) REASON="$REASON *F4 Clustering" ;;
-                    4) REASON="$REASON *F5 Page reorg" ;;
-                    5) REASON="$REASON *F6 Compression" ;;
-                    6) REASON="$REASON *F7" ;;  # Version-dependent
-                    7) REASON="$REASON *F8" ;;  # Version-dependent
-                esac
-            fi
-        done
-        if [ -n "$REASON" ]; then
+        # For tables, we need a sample to map F1-F8 accurately. Using generic for now.
+        # If you provide a table sample, we can refine this.
+        REASON="*Reorganization recommended"  # Placeholder until table sample provided
+        if [ -n "$TABLE_NAME" ] && [ -n "$REASON" ]; then
             TABLE_NAME_ESCAPED=$(echo "$TABLE_NAME" | sed 's/,/\\,/g')
             REASON_ESCAPED=$(echo "$REASON" | sed 's/,/\\,/g')
             echo "Writing to CSV: \"$TABLE_NAME_ESCAPED\",\"-\",\"$REASON_ESCAPED\"" >> $DEBUG_FILE
@@ -84,7 +69,7 @@ while IFS= read -r line; do
             ((TABLE_COUNT++))
             echo "Table $TABLE_NAME needs REORG: $REASON" >> $DEBUG_FILE
         else
-            echo "No specific reason identified for table $TABLE_NAME" >> $DEBUG_FILE
+            echo "Error: TABLE_NAME or REASON is empty. TABLE_NAME='$TABLE_NAME', REASON='$REASON'" >> $DEBUG_FILE
         fi
     fi
 done < $TEMP_FILE
@@ -103,24 +88,25 @@ while IFS= read -r line; do
         echo "Found index: $INDEX_NAME" >> $DEBUG_FILE
     elif [[ $line =~ .*\* ]]; then
         REASON=""
-        # Split line into fields, ignoring leading spaces
-        fields=($(echo "$line" | tr -s ' ' | sed 's/^[ ]*//'))
-        echo "Fields: ${fields[*]}" >> $DEBUG_FILE
-        # Map fields to F1-F3 for indexes (adjust based on your output)
-        for i in "${!fields[@]}"; do
-            if [[ "${fields[$i]}" =~ \* ]]; then
-                case $i in
-                    0) REASON="$REASON *F1 Cardinality" ;;
-                    1) REASON="$REASON *F2 Leaf pages" ;;
-                    2) REASON="$REASON *F3 Levels" ;;
-                esac
-            fi
-        done
-        # If no specific F1-F3 match, check for trailing *----
-        if [ -z "$REASON" ] && [[ "$line" =~ \*----$ ]]; then
-            REASON="*F3 Levels"  # Assuming *---- indicates index levels
+        # Handle your specific index format with *---- at the end
+        if [[ $line =~ \*----$ ]]; then
+            # Based on your sample, *---- likely indicates F3 (Levels) for indexes
+            REASON="*F3 Levels"
+        else
+            # If asterisks appear in specific columns, split and map (example for standard format)
+            fields=($(echo "$line" | tr -s ' ' | sed 's/^[ ]*//'))
+            echo "Fields: ${fields[*]}" >> $DEBUG_FILE
+            for i in "${!fields[@]}"; do
+                if [[ "${fields[$i]}" =~ \* ]]; then
+                    case $i in
+                        0) REASON="$REASON *F1 Cardinality" ;;
+                        1) REASON="$REASON *F2 Leaf pages" ;;
+                        2) REASON="$REASON *F3 Levels" ;;
+                    esac
+                fi
+            done
         fi
-        if [ -n "$REASON" ]; then
+        if [ -n "$TABLE_NAME" ] && [ -n "$INDEX_NAME" ] && [ -n "$REASON" ]; then
             TABLE_NAME_ESCAPED=$(echo "$TABLE_NAME" | sed 's/,/\\,/g')
             INDEX_NAME_ESCAPED=$(echo "$INDEX_NAME" | sed 's/,/\\,/g')
             REASON_ESCAPED=$(echo "$REASON" | sed 's/,/\\,/g')
@@ -129,7 +115,7 @@ while IFS= read -r line; do
             ((INDEX_COUNT++))
             echo "Index $INDEX_NAME needs REORG: $REASON" >> $DEBUG_FILE
         else
-            echo "No specific reason identified for index $INDEX_NAME" >> $DEBUG_FILE
+            echo "Error: TABLE_NAME, INDEX_NAME, or REASON is empty. TABLE_NAME='$TABLE_NAME', INDEX_NAME='$INDEX_NAME', REASON='$REASON'" >> $DEBUG_FILE
         fi
     fi
 done < $TEMP_FILE
@@ -145,6 +131,6 @@ echo "-------------------------------------------------------------"
 echo "Analysis complete. Results written to $CSV_FILE"
 echo "Debug log available in $DEBUG_FILE"
 echo "Tables flagged: $TABLE_COUNT, Indexes flagged: $INDEX_COUNT"
-echo "If reasons are missing, check $DEBUG_FILE and $OUTPUT_FILE."
+echo "If CSV is empty, check $DEBUG_FILE and $OUTPUT_FILE."
 echo "-------------------------------------------------------------"
 exit 0
