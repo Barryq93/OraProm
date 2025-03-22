@@ -1,15 +1,94 @@
-SELECT 
-    TABSCHEMA AS TABLE_SCHEMA,
-    TABNAME AS TABLE_NAME,
-    INDSCHEMA AS INDEX_SCHEMA,
-    INDNAME AS INDEX_NAME,
-    CASE 
-        WHEN INDEX_USAGE_COUNT > 0 THEN 'USED'
-        ELSE 'NOT USED'
-    END AS INDEX_USAGE_STATUS,
-    INDEX_USAGE_COUNT,
-    LAST_USED_TIMESTAMP
-FROM 
-    TABLE(MON_GET_INDEX(NULL, NULL, -2)) AS INDEX_USAGE
-ORDER BY 
-    INDEX_USAGE_STATUS, TABLE_SCHEMA, TABLE_NAME, INDEX_SCHEMA, INDEX_NAME;
+#!/bin/bash
+
+# Script to check tables and indexes needing REORG in DB2
+# Outputs to CSV: Table Name,Index Name,Reason
+
+# Variables
+DB_NAME="your_db_name"  # Replace with your database name
+OUTPUT_FILE="reorg_check.out"
+TEMP_FILE="reorg_check_temp.out"
+CSV_FILE="reorg_needed.csv"
+
+# Ensure the database is connected
+echo "Connecting to database $DB_NAME..."
+db2 connect to $DB_NAME > /dev/null 2>&1
+if [ $? -ne 0 ]; then
+    echo "Error: Unable to connect to database $DB_NAME. Check credentials or database status."
+    exit 1
+fi
+
+# Run REORGCHK on all tables with current statistics
+echo "Running REORGCHK on all tables..."
+db2 "reorgchk current statistics on table all" > $OUTPUT_FILE 2>/dev/null
+
+# Check if REORGCHK ran successfully
+if [ $? -ne 0 ]; then
+    echo "Error: REORGCHK command failed."
+    exit 1
+fi
+
+# Initialize CSV file with header
+echo "Table Name,Index Name,Reason" > $CSV_FILE
+
+# Parse the output for tables and indexes needing REORG
+echo "Analyzing REORGCHK output and generating CSV..."
+
+# Process table section
+grep -A 5 "Table:" $OUTPUT_FILE | grep -E "Table:|\*|^-" > $TEMP_FILE
+while IFS= read -r line; do
+    if [[ $line =~ ^Table:\ (.*) ]]; then
+        TABLE_NAME="${BASH_REMATCH[1]}"
+        REASON=""
+    elif [[ $line =~ ^- ]]; then
+        # Check table formulas (F1-F8) for *
+        if echo "$line" | grep -q "\*"; then
+            if echo "$line" | grep -q "F1.*\*"; then REASON="$REASON *Overflow records"; fi
+            if echo "$line" | grep -q "F2.*\*"; then REASON="$REASON *Space utilization"; fi
+            if echo "$line" | grep -q "F3.*\*"; then REASON="$REASON *Fragmentation"; fi
+            if echo "$line" | grep -q "F4.*\*"; then REASON="$REASON *Clustering (REORG)"; fi
+            if echo "$line" | grep -q "F5.*\*"; then REASON="$REASON *Page reorg"; fi
+            if echo "$line" | grep -q "F6.*\*"; then REASON="$REASON *Compression"; fi
+            if [ -n "$REASON" ]; then
+                # Escape commas in table name and reason for CSV
+                TABLE_NAME_ESCAPED=$(echo "$TABLE_NAME" | sed 's/,/\\,/g')
+                REASON_ESCAPED=$(echo "$REASON" | sed 's/,/\\,/g')
+                echo "\"$TABLE_NAME_ESCAPED\",\"-\",\"$REASON_ESCAPED\"" >> $CSV_FILE
+            fi
+        fi
+    fi
+done < $TEMP_FILE
+
+# Process index section
+grep -A 5 "Index:" $OUTPUT_FILE | grep -E "Index:|\*|^-" > $TEMP_FILE
+while IFS= read -r line; do
+    if [[ $line =~ ^Index:\ (.*) ]]; then
+        INDEX_NAME="${BASH_REMATCH[1]}"
+        TABLE_NAME=$(echo "$INDEX_NAME" | cut -d'.' -f1-2)  # Extract schema.table
+        REASON=""
+    elif [[ $line =~ ^- ]]; then
+        # Check index formulas (F1-F3) for *
+        if echo "$line" | grep -q "\*"; then
+            if echo "$line" | grep -q "F1.*\*"; then REASON="$REASON *Cardinality"; fi
+            if echo "$line" | grep -q "F2.*\*"; then REASON="$REASON *Leaf pages"; fi
+            if echo "$line" | grep -q "F3.*\*"; then REASON="$REASON *Levels"; fi
+            if [ -n "$REASON" ]; then
+                # Escape commas in table/index name and reason for CSV
+                TABLE_NAME_ESCAPED=$(echo "$TABLE_NAME" | sed 's/,/\\,/g')
+                INDEX_NAME_ESCAPED=$(echo "$INDEX_NAME" | sed 's/,/\\,/g')
+                REASON_ESCAPED=$(echo "$REASON" | sed 's/,/\\,/g')
+                echo "\"$TABLE_NAME_ESCAPED\",\"$INDEX_NAME_ESCAPED\",\"$REASON_ESCAPED\"" >> $CSV_FILE
+            fi
+        fi
+    fi
+done < $TEMP_FILE
+
+# Cleanup temporary files
+rm -f $OUTPUT_FILE $TEMP_FILE
+
+# Disconnect from the database
+db2 terminate > /dev/null 2>&1
+
+echo "-------------------------------------------------------------"
+echo "Analysis complete. Results written to $CSV_FILE"
+echo "-------------------------------------------------------------"
+exit 0
