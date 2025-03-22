@@ -41,6 +41,7 @@ echo "REORGCHK output size: $(wc -l $OUTPUT_FILE | awk '{print $1}') lines" >> $
 
 # Initialize CSV file with header
 echo "Table Name,Index Name,Reason" > $CSV_FILE
+echo "CSV initialized with header" >> $DEBUG_FILE
 
 # Parse the output for tables and indexes needing REORG
 echo "Analyzing REORGCHK output and generating CSV..."
@@ -50,25 +51,23 @@ echo "Parsing table section..." >> $DEBUG_FILE
 grep -A 5 "Table:" $OUTPUT_FILE | grep -E "Table:|\*" > $TEMP_FILE
 TABLE_COUNT=0
 while IFS= read -r line; do
-    echo "Processing line: $line" >> $DEBUG_FILE
+    echo "Processing table line: '$line'" >> $DEBUG_FILE
     if [[ $line =~ ^Table:\ (.*) ]]; then
         TABLE_NAME="${BASH_REMATCH[1]}"
         REASON=""
         echo "Found table: $TABLE_NAME" >> $DEBUG_FILE
-    elif [[ $line =~ .*\* ]]; then  # Match any line with an asterisk
-        REASON=""
-        if echo "$line" | grep -q "F1.*\*"; then REASON="$REASON *Overflow records"; fi
-        if echo "$line" | grep -q "F2.*\*"; then REASON="$REASON *Space utilization"; fi
-        if echo "$line" | grep -q "F3.*\*"; then REASON="$REASON *Fragmentation"; fi
-        if echo "$line" | grep -q "F4.*\*"; then REASON="$REASON *Clustering (REORG)"; fi
-        if echo "$line" | grep -q "F5.*\*"; then REASON="$REASON *Page reorg"; fi
-        if echo "$line" | grep -q "F6.*\*"; then REASON="$REASON *Compression"; fi
-        if [ -n "$REASON" ]; then
+    elif [[ $line =~ .*\* ]]; then
+        REASON="*Reorganization recommended"  # Generic reason for any *
+        echo "Asterisk found. Setting REASON: $REASON" >> $DEBUG_FILE
+        if [ -n "$TABLE_NAME" ] && [ -n "$REASON" ]; then
             TABLE_NAME_ESCAPED=$(echo "$TABLE_NAME" | sed 's/,/\\,/g')
             REASON_ESCAPED=$(echo "$REASON" | sed 's/,/\\,/g')
+            echo "Writing to CSV: \"$TABLE_NAME_ESCAPED\",\"-\",\"$REASON_ESCAPED\"" >> $DEBUG_FILE
             echo "\"$TABLE_NAME_ESCAPED\",\"-\",\"$REASON_ESCAPED\"" >> $CSV_FILE
             ((TABLE_COUNT++))
             echo "Table $TABLE_NAME needs REORG: $REASON" >> $DEBUG_FILE
+        else
+            echo "Error: TABLE_NAME or REASON is empty. TABLE_NAME='$TABLE_NAME', REASON='$REASON'" >> $DEBUG_FILE
         fi
     fi
 done < $TEMP_FILE
@@ -79,24 +78,25 @@ echo "Parsing index section..." >> $DEBUG_FILE
 grep -A 5 "Index:" $OUTPUT_FILE | grep -E "Index:|\*" > $TEMP_FILE
 INDEX_COUNT=0
 while IFS= read -r line; do
-    echo "Processing line: $line" >> $DEBUG_FILE
+    echo "Processing index line: '$line'" >> $DEBUG_FILE
     if [[ $line =~ ^Index:\ (.*) ]]; then
         INDEX_NAME="${BASH_REMATCH[1]}"
         TABLE_NAME=$(echo "$INDEX_NAME" | cut -d'.' -f1-2)
         REASON=""
         echo "Found index: $INDEX_NAME" >> $DEBUG_FILE
-    elif [[ $line =~ .*\* ]]; then  # Match any line with an asterisk
-        REASON=""
-        if echo "$line" | grep -q "F1.*\*"; then REASON="$REASON *Cardinality"; fi
-        if echo "$line" | grep -q "F2.*\*"; then REASON="$REASON *Leaf pages"; fi
-        if echo "$line" | grep -q "F3.*\*"; then REASON="$REASON *Levels"; fi
-        if [ -n "$REASON" ]; then
+    elif [[ $line =~ .*\* ]]; then
+        REASON="*Reorganization recommended"  # Generic reason for any *
+        echo "Asterisk found. Setting REASON: $REASON" >> $DEBUG_FILE
+        if [ -n "$TABLE_NAME" ] && [ -n "$INDEX_NAME" ] && [ -n "$REASON" ]; then
             TABLE_NAME_ESCAPED=$(echo "$TABLE_NAME" | sed 's/,/\\,/g')
             INDEX_NAME_ESCAPED=$(echo "$INDEX_NAME" | sed 's/,/\\,/g')
             REASON_ESCAPED=$(echo "$REASON" | sed 's/,/\\,/g')
+            echo "Writing to CSV: \"$TABLE_NAME_ESCAPED\",\"$INDEX_NAME_ESCAPED\",\"$REASON_ESCAPED\"" >> $DEBUG_FILE
             echo "\"$TABLE_NAME_ESCAPED\",\"$INDEX_NAME_ESCAPED\",\"$REASON_ESCAPED\"" >> $CSV_FILE
             ((INDEX_COUNT++))
             echo "Index $INDEX_NAME needs REORG: $REASON" >> $DEBUG_FILE
+        else
+            echo "Error: TABLE_NAME, INDEX_NAME, or REASON is empty. TABLE_NAME='$TABLE_NAME', INDEX_NAME='$INDEX_NAME', REASON='$REASON'" >> $DEBUG_FILE
         fi
     fi
 done < $TEMP_FILE
@@ -109,4 +109,9 @@ echo "Processed $INDEX_COUNT indexes needing REORG" >> $DEBUG_FILE
 db2 terminate >> $DEBUG_FILE 2>&1
 
 echo "-------------------------------------------------------------"
-echo "Analysis complete. Results
+echo "Analysis complete. Results written to $CSV_FILE"
+echo "Debug log available in $DEBUG_FILE"
+echo "Tables flagged: $TABLE_COUNT, Indexes flagged: $INDEX_COUNT"
+echo "If CSV is empty, check $DEBUG_FILE and $OUTPUT_FILE for clues."
+echo "-------------------------------------------------------------"
+exit 0
