@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Script to check tables and indexes needing REORG in DB2
-# Outputs to CSV: Table Name,Index Name,Reason (F1-F3 for tables, F4-F8 for indexes)
+# Outputs to CSV: Table Name,Index Name,Reason (F1-F3 for tables with ---, F4-F8 for indexes with ----)
 
 # Variables
 DB_NAME="your_db_name"  # Replace with your database name
@@ -69,14 +69,14 @@ while IFS= read -r line; do
                 esac
             fi
         done
-        # Fallback for summary asterisk (e.g., *---- or --*--)
+        # Fallback for summary asterisk (tables use --- instead of ----)
         if [ -z "$REASON" ]; then
             if [[ $line =~ --\*-- ]]; then
-                REASON="*F2 Space utilization"  # Example mapping
-            elif [[ $line =~ \*---- ]]; then
-                REASON="*F3 Fragmentation"  # Example mapping
+                REASON="*F2 Space utilization"  # Three dashes, middle asterisk
+            elif [[ $line =~ \*%--- ]]; then
+                REASON="*F3 Fragmentation"  # Three dashes, leading asterisk
             else
-                REASON="*Reorganization recommended"
+                REASON="*Reorganization recommended"  # Catch-all
             fi
         fi
         if [ -n "$TABLE_NAME" ] && [ -n "$REASON" ]; then
@@ -93,7 +93,7 @@ while IFS= read -r line; do
 done < $TEMP_FILE
 echo "Processed $TABLE_COUNT tables needing REORG" >> $DEBUG_FILE
 
-# Process index section
+# Process index section (unchanged, confirmed working)
 echo "Parsing index section..." >> $DEBUG_FILE
 grep -A 1 "Index:" $OUTPUT_FILE | grep -E "Index:|\*" > $TEMP_FILE
 INDEX_COUNT=0
@@ -114,17 +114,17 @@ while IFS= read -r line; do
                     0) REASON="$REASON *F4 Clustering" ;;
                     1) REASON="$REASON *F5 Page reorg" ;;
                     2) REASON="$REASON *F6 Compression" ;;
-                    3) REASON="$REASON *F7" ;;  # Placeholder
-                    4) REASON="$REASON *F8" ;;  # Placeholder
+                    3) REASON="$REASON *F7" ;;
+                    4) REASON="$REASON *F8" ;;
                 esac
             fi
         done
-        # Fallback for summary asterisk (e.g., *---- or --*--)
+        # Fallback for summary asterisk (indexes use ----)
         if [ -z "$REASON" ]; then
             if [[ $line =~ --\*-- ]]; then
-                REASON="*F5 Page reorg"  # Adjust based on your meaning
+                REASON="*F5 Page reorg"  # Four-dash context, but could be three
             elif [[ $line =~ \*---- ]]; then
-                REASON="*F4 Clustering"  # Adjust based on your sample
+                REASON="*F4 Clustering"  # Four dashes
             else
                 REASON="*Reorganization recommended"
             fi
