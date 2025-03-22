@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Script to check tables and indexes needing REORG in DB2
-# Outputs to CSV: Table Name,Index Name,Reason (F1-F8 for tables, F1-F3 for indexes)
+# Outputs to CSV: Table Name,Index Name,Reason (F1-F3 for tables, F4-F8 for indexes)
 
 # Variables
 DB_NAME="your_db_name"  # Replace with your database name
@@ -48,7 +48,7 @@ echo "Analyzing REORGCHK output and generating CSV..."
 
 # Process table section
 echo "Parsing table section..." >> $DEBUG_FILE
-grep -A 5 "Table:" $OUTPUT_FILE | grep -E "Table:|\*" > $TEMP_FILE
+grep -A 1 "Table:" $OUTPUT_FILE | grep -E "Table:|\*" > $TEMP_FILE
 TABLE_COUNT=0
 while IFS= read -r line; do
     echo "Processing table line: '$line'" >> $DEBUG_FILE
@@ -58,13 +58,31 @@ while IFS= read -r line; do
         echo "Found table: $TABLE_NAME" >> $DEBUG_FILE
     elif [[ $line =~ .*\* ]]; then
         REASON=""
-        # For tables, we need a sample to map F1-F8 accurately. Using generic for now.
-        # If you provide a table sample, we can refine this.
-        REASON="*Reorganization recommended"  # Placeholder until table sample provided
+        fields=($(echo "$line" | tr -s ' ' | sed 's/^[ ]*//'))
+        echo "Table fields: ${fields[*]}" >> $DEBUG_FILE
+        for i in "${!fields[@]}"; do
+            if [[ "${fields[$i]}" =~ \* ]]; then
+                case $i in
+                    0) REASON="$REASON *F1 Overflow records" ;;
+                    1) REASON="$REASON *F2 Space utilization" ;;
+                    2) REASON="$REASON *F3 Fragmentation" ;;
+                esac
+            fi
+        done
+        # Fallback for summary asterisk (e.g., *---- or --*--)
+        if [ -z "$REASON" ]; then
+            if [[ $line =~ --\*-- ]]; then
+                REASON="*F2 Space utilization"  # Example mapping
+            elif [[ $line =~ \*---- ]]; then
+                REASON="*F3 Fragmentation"  # Example mapping
+            else
+                REASON="*Reorganization recommended"
+            fi
+        fi
         if [ -n "$TABLE_NAME" ] && [ -n "$REASON" ]; then
             TABLE_NAME_ESCAPED=$(echo "$TABLE_NAME" | sed 's/,/\\,/g')
             REASON_ESCAPED=$(echo "$REASON" | sed 's/,/\\,/g')
-            echo "Writing to CSV: \"$TABLE_NAME_ESCAPED\",\"-\",\"$REASON_ESCAPED\"" >> $DEBUG_FILE
+            echo "Writing table to CSV: \"$TABLE_NAME_ESCAPED\",\"-\",\"$REASON_ESCAPED\"" >> $DEBUG_FILE
             echo "\"$TABLE_NAME_ESCAPED\",\"-\",\"$REASON_ESCAPED\"" >> $CSV_FILE
             ((TABLE_COUNT++))
             echo "Table $TABLE_NAME needs REORG: $REASON" >> $DEBUG_FILE
@@ -77,7 +95,7 @@ echo "Processed $TABLE_COUNT tables needing REORG" >> $DEBUG_FILE
 
 # Process index section
 echo "Parsing index section..." >> $DEBUG_FILE
-grep -A 5 "Index:" $OUTPUT_FILE | grep -E "Index:|\*" > $TEMP_FILE
+grep -A 1 "Index:" $OUTPUT_FILE | grep -E "Index:|\*" > $TEMP_FILE
 INDEX_COUNT=0
 while IFS= read -r line; do
     echo "Processing index line: '$line'" >> $DEBUG_FILE
@@ -88,29 +106,34 @@ while IFS= read -r line; do
         echo "Found index: $INDEX_NAME" >> $DEBUG_FILE
     elif [[ $line =~ .*\* ]]; then
         REASON=""
-        # Handle your specific index format with *---- at the end
-        if [[ $line =~ \*----$ ]]; then
-            # Based on your sample, *---- likely indicates F3 (Levels) for indexes
-            REASON="*F3 Levels"
-        else
-            # If asterisks appear in specific columns, split and map (example for standard format)
-            fields=($(echo "$line" | tr -s ' ' | sed 's/^[ ]*//'))
-            echo "Fields: ${fields[*]}" >> $DEBUG_FILE
-            for i in "${!fields[@]}"; do
-                if [[ "${fields[$i]}" =~ \* ]]; then
-                    case $i in
-                        0) REASON="$REASON *F1 Cardinality" ;;
-                        1) REASON="$REASON *F2 Leaf pages" ;;
-                        2) REASON="$REASON *F3 Levels" ;;
-                    esac
-                fi
-            done
+        fields=($(echo "$line" | tr -s ' ' | sed 's/^[ ]*//'))
+        echo "Index fields: ${fields[*]}" >> $DEBUG_FILE
+        for i in "${!fields[@]}"; do
+            if [[ "${fields[$i]}" =~ \* ]]; then
+                case $i in
+                    0) REASON="$REASON *F4 Clustering" ;;
+                    1) REASON="$REASON *F5 Page reorg" ;;
+                    2) REASON="$REASON *F6 Compression" ;;
+                    3) REASON="$REASON *F7" ;;  # Placeholder
+                    4) REASON="$REASON *F8" ;;  # Placeholder
+                esac
+            fi
+        done
+        # Fallback for summary asterisk (e.g., *---- or --*--)
+        if [ -z "$REASON" ]; then
+            if [[ $line =~ --\*-- ]]; then
+                REASON="*F5 Page reorg"  # Adjust based on your meaning
+            elif [[ $line =~ \*---- ]]; then
+                REASON="*F4 Clustering"  # Adjust based on your sample
+            else
+                REASON="*Reorganization recommended"
+            fi
         fi
         if [ -n "$TABLE_NAME" ] && [ -n "$INDEX_NAME" ] && [ -n "$REASON" ]; then
             TABLE_NAME_ESCAPED=$(echo "$TABLE_NAME" | sed 's/,/\\,/g')
             INDEX_NAME_ESCAPED=$(echo "$INDEX_NAME" | sed 's/,/\\,/g')
             REASON_ESCAPED=$(echo "$REASON" | sed 's/,/\\,/g')
-            echo "Writing to CSV: \"$TABLE_NAME_ESCAPED\",\"$INDEX_NAME_ESCAPED\",\"$REASON_ESCAPED\"" >> $DEBUG_FILE
+            echo "Writing index to CSV: \"$TABLE_NAME_ESCAPED\",\"$INDEX_NAME_ESCAPED\",\"$REASON_ESCAPED\"" >> $DEBUG_FILE
             echo "\"$TABLE_NAME_ESCAPED\",\"$INDEX_NAME_ESCAPED\",\"$REASON_ESCAPED\"" >> $CSV_FILE
             ((INDEX_COUNT++))
             echo "Index $INDEX_NAME needs REORG: $REASON" >> $DEBUG_FILE
@@ -131,6 +154,6 @@ echo "-------------------------------------------------------------"
 echo "Analysis complete. Results written to $CSV_FILE"
 echo "Debug log available in $DEBUG_FILE"
 echo "Tables flagged: $TABLE_COUNT, Indexes flagged: $INDEX_COUNT"
-echo "If CSV is empty, check $DEBUG_FILE and $OUTPUT_FILE."
+echo "If issues persist, check $DEBUG_FILE and $OUTPUT_FILE."
 echo "-------------------------------------------------------------"
 exit 0
