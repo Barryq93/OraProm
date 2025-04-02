@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Logs deduped inbound and outbound TCP connections for a hardcoded PID over a 60-minute period.
+Logs deduped inbound and outbound TCP connections with hostname resolution for a hardcoded PID.
 #>
 
 # --- Configuration ---
@@ -15,6 +15,7 @@ $TotalIterations = ($MonitoringDurationMinutes * 60) / $MonitoringIntervalSecond
 $IterationCount = 0
 $LoggedOutboundConnections = [System.Collections.Generic.HashSet[string]]::new()
 $LoggedInboundConnections = [System.Collections.Generic.HashSet[string]]::new()
+$DNS_Cache = @{} # Cache for DNS lookups to improve performance
 
 # --- HARDCODED PID ---
 $PIDToMonitor = 12345 # Replace with your actual PID
@@ -63,11 +64,55 @@ function Get-ProcessListeningPorts {
     }
 }
 
+function Get-HostnameFromIP {
+    param([string]$IPAddress)
+    
+    # Skip local and multicast addresses
+    if ($IPAddress -match '^(127\.|169\.254\.|224\.|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)') {
+        return "local"
+    }
+    
+    # Check cache first
+    if ($DNS_Cache.ContainsKey($IPAddress)) {
+        return $DNS_Cache[$IPAddress]
+    }
+    
+    try {
+        $result = Resolve-DnsName -Name $IPAddress -ErrorAction Stop -DnsOnly
+        $hostname = $result.NameHost
+        if ([string]::IsNullOrEmpty($hostname)) {
+            $hostname = "CANNOT_RESOLVE"
+        }
+        $DNS_Cache[$IPAddress] = $hostname
+        return $hostname
+    } catch [System.Management.Automation.CommandNotFoundException] {
+        try {
+            # Fallback to nslookup if Resolve-DnsName isn't available
+            $result = nslookup $IPAddress 2>$null | Select-String "Name:" | ForEach-Object {
+                $_.Line.Split(':')[1].Trim()
+            }
+            if ($result) {
+                $DNS_Cache[$IPAddress] = $result
+                return $result
+            }
+            $DNS_Cache[$IPAddress] = "CANNOT_RESOLVE"
+            return "CANNOT_RESOLVE"
+        } catch {
+            $DNS_Cache[$IPAddress] = "CANNOT_RESOLVE"
+            return "CANNOT_RESOLVE"
+        }
+    } catch {
+        $DNS_Cache[$IPAddress] = "CANNOT_RESOLVE"
+        return "CANNOT_RESOLVE"
+    }
+}
+
 function Log-Data {
     param(
         [string]$LogFilePath,
-        [string[]]$Data,
-        [string]$ConnectionType
+        [array]$Data,
+        [string]$ConnectionType,
+        [bool]$IncludePort = $false
     )
     
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -76,7 +121,23 @@ function Log-Data {
     if ($Data -and $Data.Count -gt 0) {
         $logEntry += " - Found $($Data.Count) new:"
         Add-Content -Path $LogFilePath -Value $logEntry
-        Add-Content -Path $LogFilePath -Value ($Data | Sort-Object -Unique)
+        
+        $formattedEntries = @()
+        foreach ($entry in $Data) {
+            if ($IncludePort) {
+                # For inbound: IP:PORT format
+                $ip = $entry.Split(':')[0]
+                $port = $entry.Split(':')[1]
+                $hostname = Get-HostnameFromIP -IPAddress $ip
+                $formattedEntries += "$entry - $hostname"
+            } else {
+                # For outbound: IP only
+                $hostname = Get-HostnameFromIP -IPAddress $entry
+                $formattedEntries += "$entry - $hostname"
+            }
+        }
+        
+        Add-Content -Path $LogFilePath -Value ($formattedEntries | Sort-Object -Unique)
     } else {
         $logEntry += " - No new connections found"
         Add-Content -Path $LogFilePath -Value $logEntry
@@ -130,7 +191,7 @@ try {
             }
         }
         
-        Log-Data -LogFilePath $InboundLogFile -Data $NewInboundConnections -ConnectionType "Inbound"
+        Log-Data -LogFilePath $InboundLogFile -Data $NewInboundConnections -ConnectionType "Inbound" -IncludePort $true
         Write-Host "  Inbound: $($NewInboundConnections.Count) new endpoints"
 
         if ($IterationCount % 6 -eq 0) {  # Every minute
@@ -150,6 +211,7 @@ End Time: $(Get-Date)
 Total Iterations: $IterationCount
 Unique Outbound Addresses: $($LoggedOutboundConnections.Count)
 Unique Inbound Endpoints: $($LoggedInboundConnections.Count)
+DNS Cache Size: $($DNS_Cache.Count)
 "@
 
     Add-Content -Path $OutboundLogFile -Value $Summary
@@ -161,4 +223,5 @@ Unique Inbound Endpoints: $($LoggedInboundConnections.Count)
     Write-Host "`nSummary:"
     Write-Host "  Unique Outbound Addresses: $($LoggedOutboundConnections.Count)"
     Write-Host "  Unique Inbound Endpoints: $($LoggedInboundConnections.Count)"
+    Write-Host "  DNS queries performed: $($DNS_Cache.Count)"
 }
