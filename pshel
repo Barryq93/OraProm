@@ -1,42 +1,36 @@
 <#
 .SYNOPSIS
-Logs deduped inbound and outbound TCP connections for a specific PID over a 60-minute period.
+Logs deduped inbound and outbound TCP connections for a hardcoded PID over a 60-minute period.
 
 .DESCRIPTION
-This script takes a Process ID (PID) as input and monitors both inbound and outbound
-TCP connections associated with that PID for a duration of 60 minutes. The script
-periodically samples the connections, dedupes the remote addresses for outbound
-connections and the remote endpoints for inbound connections, and logs them
-separately to text files.
-
-.PARAMETER PID
-The Process ID of the application to monitor.
-
-.EXAMPLE
-.\Monitor-ProcessConnections.ps1 -PID 1234
+This script monitors both inbound and outbound TCP connections associated with a
+hardcoded Process ID (PID) for a duration of 60 minutes. The script periodically
+samples the connections, dedupes the remote addresses for outbound connections
+and the remote endpoints for inbound connections, and logs them separately to
+text files.
 
 .NOTES
 - Requires administrative privileges to run effectively.
 - Logs will be saved in the same directory as the script.
 - Inbound connections are deduped based on the remote IP:Port.
 - Outbound connections are deduped based on the remote IP address.
+- **The PID to monitor is hardcoded in the script.**
 #>
-param(
-    [Parameter(Mandatory=$true)]
-    [int]$PID
-)
 
 # --- Configuration ---
 $ScriptName = $MyInvocation.MyCommand.Name
 $LogDirectory = Split-Path -Path $MyInvocation.MyCommand.Path -Parent
-$OutboundLogFile = Join-Path -Path $LogDirectory -ChildPath "$ScriptName-Outbound-$PID-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
-$InboundLogFile = Join-Path -Path $LogDirectory -ChildPath "$ScriptName-Inbound-$PID-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+$OutboundLogFile = Join-Path -Path $LogDirectory -ChildPath "$ScriptName-Outbound-HARDCODED-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+$InboundLogFile = Join-Path -Path $LogDirectory -ChildPath "$ScriptName-Inbound-HARDCODED-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
 $MonitoringIntervalSeconds = 10
 $MonitoringDurationMinutes = 60
 $TotalIterations = ($MonitoringDurationMinutes * 60) / $MonitoringIntervalSeconds
 $IterationCount = 0
 $LoggedOutboundConnections = [System.Collections.Generic.HashSet[string]]::new()
 $LoggedInboundConnections = [System.Collections.Generic.HashSet[string]]::new()
+
+# --- HARDCODED PID ---
+$PIDToMonitor = 12345 # Replace 12345 with the actual PID you want to monitor
 
 # --- Helper Function to Get Connections ---
 function Get-ProcessConnections {
@@ -62,13 +56,13 @@ function Log-Data {
 }
 
 # --- Monitoring Loop ---
-Write-Host "Monitoring PID '$PID' for $MonitoringDurationMinutes minutes..."
+Write-Host "Monitoring PID '$PIDToMonitor' for $MonitoringDurationMinutes minutes..."
 
 while ($IterationCount -lt $TotalIterations) {
     Write-Host "Iteration $($IterationCount + 1) of $TotalIterations..."
 
     # --- Get Outbound Connections ---
-    $OutboundConnections = Get-ProcessConnections -ProcessId $PID
+    $OutboundConnections = Get-ProcessConnections -ProcessId $PIDToMonitor
     $CurrentOutboundRemoteAddresses = $OutboundConnections | Select-Object -ExpandProperty RemoteAddress | Sort-Object -Unique
     $NewOutboundConnections = @()
     foreach ($Address in $CurrentOutboundRemoteAddresses) {
@@ -81,7 +75,7 @@ while ($IterationCount -lt $TotalIterations) {
     Write-Host "  Found $($NewOutboundConnections.Count) new outbound remote addresses."
 
     # --- Get Inbound Connections (Listening Ports and Established) ---
-    $ListeningPorts = (Get-NetTCPListeningPort -OwningProcess $PID).LocalPort
+    $ListeningPorts = (Get-NetTCPListeningPort -OwningProcess $PIDToMonitor).LocalPort
     $CurrentInboundConnections = @()
     if ($ListeningPorts) {
         $CurrentInboundConnections = Get-NetTCPConnection -LocalPort $ListeningPorts -State Established | Select-Object RemoteAddress, RemotePort | ForEach-Object {"$($_.RemoteAddress):$($_.RemotePort)"} | Sort-Object -Unique
