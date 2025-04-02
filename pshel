@@ -7,7 +7,8 @@ This script monitors both inbound and outbound TCP connections associated with a
 hardcoded Process ID (PID) for a duration of 60 minutes. The script periodically
 samples the connections, dedupes the remote addresses for outbound connections
 and the remote endpoints for inbound connections, and logs them separately to
-text files.
+text files. This version uses `netstat` to gather listening port information
+for compatibility with PowerShell versions that may not have the NetTCPIP module.
 
 .NOTES
 - Requires administrative privileges to run effectively.
@@ -32,14 +33,13 @@ $LoggedInboundConnections = [System.Collections.Generic.HashSet[string]]::new()
 # --- HARDCODED PID ---
 $PIDToMonitor = 12345 # Replace 12345 with the actual PID you want to monitor
 
-# --- Helper Function to Get Connections ---
-function Get-ProcessConnections {
+# --- Helper Function to Get Established Connections for a PID ---
+function Get-EstablishedProcessConnections {
     param(
         [Parameter(Mandatory=$true)]
         [int]$ProcessId
     )
-    $Connections = Get-NetTCPConnection -State Established | Where-Object {$_.OwningProcess -eq $ProcessId}
-    return $Connections
+    Get-NetTCPConnection -State Established | Where-Object {$_.OwningProcess -eq $ProcessId}
 }
 
 # --- Helper Function to Log Data ---
@@ -62,7 +62,7 @@ while ($IterationCount -lt $TotalIterations) {
     Write-Host "Iteration $($IterationCount + 1) of $TotalIterations..."
 
     # --- Get Outbound Connections ---
-    $OutboundConnections = Get-ProcessConnections -ProcessId $PIDToMonitor
+    $OutboundConnections = Get-EstablishedProcessConnections -ProcessId $PIDToMonitor
     $CurrentOutboundRemoteAddresses = $OutboundConnections | Select-Object -ExpandProperty RemoteAddress | Sort-Object -Unique
     $NewOutboundConnections = @()
     foreach ($Address in $CurrentOutboundRemoteAddresses) {
@@ -74,11 +74,25 @@ while ($IterationCount -lt $TotalIterations) {
     Log-Data -LogFilePath $OutboundLogFile -Data $NewOutboundConnections
     Write-Host "  Found $($NewOutboundConnections.Count) new outbound remote addresses."
 
-    # --- Get Inbound Connections (Listening Ports and Established) ---
-    $ListeningPorts = (Get-NetTCPListeningPort -OwningProcess $PIDToMonitor).LocalPort
+    # --- Get Inbound Connections (Listening Ports via netstat and Established Connections) ---
+    $NetstatOutput = netstat -ano | Select-String -Pattern "LISTENING.*$PIDToMonitor"
+    $ListeningPorts = @()
+    foreach ($Line in $NetstatOutput) {
+        if ($Line -match ":(\d+)\s+0\.0\.0\.0") {
+            $ListeningPorts += $Matches[1]
+        } elseif ($Line -match "\[::]:(\d+)\s+::") {
+            $ListeningPorts += $Matches[1]
+        } elseif ($Line -match "(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d+)\s+0\.0\.0\.0") {
+            $ListeningPorts += $Matches[2]
+        } elseif ($Line -match "\[([0-9a-fA-F:]+)\]:(\d+)\s+::") {
+            $ListeningPorts += $Matches[2]
+        }
+    }
+    $ListeningPorts = $ListeningPorts | Sort-Object -Unique
+
     $CurrentInboundConnections = @()
     if ($ListeningPorts) {
-        $CurrentInboundConnections = Get-NetTCPConnection -LocalPort $ListeningPorts -State Established | Select-Object RemoteAddress, RemotePort | ForEach-Object {"$($_.RemoteAddress):$($_.RemotePort)"} | Sort-Object -Unique
+        $CurrentInboundConnections = Get-NetTCPConnection -State Established | Where-Object {$ListeningPorts -contains $_.LocalPort} | Select-Object RemoteAddress, RemotePort | ForEach-Object {"$($_.RemoteAddress):$($_.RemotePort)"} | Sort-Object -Unique
     }
     $NewInboundConnections = @()
     foreach ($Endpoint in $CurrentInboundConnections) {
