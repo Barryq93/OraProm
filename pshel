@@ -1,20 +1,6 @@
 <#
 .SYNOPSIS
 Logs deduped inbound and outbound TCP connections for a hardcoded PID over a 60-minute period.
-
-.DESCRIPTION
-This script monitors both inbound and outbound TCP connections associated with a
-hardcoded Process ID (PID) for a duration of 60 minutes. The script periodically
-samples the connections, dedupes the remote addresses for outbound connections
-and the remote endpoints for inbound connections, and logs them separately to
-text files with timestamps.
-
-.NOTES
-- Requires administrative privileges to run effectively.
-- Logs will be saved in the same directory as the script.
-- Inbound connections are deduped based on the remote IP:Port.
-- Outbound connections are deduped based on the remote IP address.
-- **The PID to monitor is hardcoded in the script.**
 #>
 
 # --- Configuration ---
@@ -31,7 +17,7 @@ $LoggedOutboundConnections = [System.Collections.Generic.HashSet[string]]::new()
 $LoggedInboundConnections = [System.Collections.Generic.HashSet[string]]::new()
 
 # --- HARDCODED PID ---
-$PIDToMonitor = 12345 # Replace 12345 with the actual PID you want to monitor
+$PIDToMonitor = 12345 # Replace with your actual PID
 
 # --- Validate PID exists ---
 try {
@@ -55,13 +41,9 @@ Total Duration: $MonitoringDurationMinutes minutes
 Add-Content -Path $OutboundLogFile -Value $Header
 Add-Content -Path $InboundLogFile -Value $Header
 
-# --- Helper Function to Get Established Connections for a PID ---
+# --- Helper Functions ---
 function Get-EstablishedProcessConnections {
-    param(
-        [Parameter(Mandatory=$true)]
-        [int]$ProcessId
-    )
-    
+    param([int]$ProcessId)
     try {
         Get-NetTCPConnection -State Established -ErrorAction Stop | Where-Object {$_.OwningProcess -eq $ProcessId}
     } catch {
@@ -70,13 +52,8 @@ function Get-EstablishedProcessConnections {
     }
 }
 
-# --- Helper Function to Get Listening Ports for a PID ---
 function Get-ProcessListeningPorts {
-    param(
-        [Parameter(Mandatory=$true)]
-        [int]$ProcessId
-    )
-    
+    param([int]$ProcessId)
     try {
         Get-NetTCPConnection -State Listen -ErrorAction Stop | Where-Object {$_.OwningProcess -eq $ProcessId} | 
         Select-Object -ExpandProperty LocalPort -Unique
@@ -86,21 +63,22 @@ function Get-ProcessListeningPorts {
     }
 }
 
-# --- Helper Function to Log Data with Timestamp ---
 function Log-Data {
     param(
-        [Parameter(Mandatory=$true)]
         [string]$LogFilePath,
-        [Parameter(Mandatory=$true)]
         [string[]]$Data,
         [string]$ConnectionType
     )
     
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $logEntry = "[$timestamp] $ConnectionType connections check"
+    
     if ($Data -and $Data.Count -gt 0) {
-        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-        $logEntry = @()
-        $logEntry += "`n[$timestamp] New $ConnectionType connections ($($Data.Count)):"
-        $logEntry += $Data | Sort-Object -Unique
+        $logEntry += " - Found $($Data.Count) new:"
+        Add-Content -Path $LogFilePath -Value $logEntry
+        Add-Content -Path $LogFilePath -Value ($Data | Sort-Object -Unique)
+    } else {
+        $logEntry += " - No new connections found"
         Add-Content -Path $LogFilePath -Value $logEntry
     }
 }
@@ -112,27 +90,31 @@ try {
         $CurrentTime = Get-Date -Format "HH:mm:ss"
         Write-Host "[$CurrentTime] Iteration $IterationCount of $TotalIterations..."
 
-        # --- Get Outbound Connections ---
+        # --- Outbound Connections ---
         $OutboundConnections = Get-EstablishedProcessConnections -ProcessId $PIDToMonitor
+        $NewOutboundConnections = @()
+        
         if ($OutboundConnections) {
             $CurrentOutboundRemoteAddresses = $OutboundConnections | 
                 Select-Object -ExpandProperty RemoteAddress | 
                 Where-Object { $_ -notlike '*::*' } |  # Exclude IPv6 if desired
                 Sort-Object -Unique
             
-            $NewOutboundConnections = @()
             foreach ($Address in $CurrentOutboundRemoteAddresses) {
                 if (-not $LoggedOutboundConnections.Contains($Address)) {
                     $NewOutboundConnections += $Address
                     $null = $LoggedOutboundConnections.Add($Address)
                 }
             }
-            Log-Data -LogFilePath $OutboundLogFile -Data $NewOutboundConnections -ConnectionType "outbound"
-            Write-Host "  Found $($NewOutboundConnections.Count) new outbound remote addresses."
         }
+        
+        Log-Data -LogFilePath $OutboundLogFile -Data $NewOutboundConnections -ConnectionType "Outbound"
+        Write-Host "  Outbound: $($NewOutboundConnections.Count) new addresses"
 
-        # --- Get Inbound Connections ---
+        # --- Inbound Connections ---
         $ListeningPorts = Get-ProcessListeningPorts -ProcessId $PIDToMonitor
+        $NewInboundConnections = @()
+        
         if ($ListeningPorts) {
             $CurrentInboundConnections = Get-NetTCPConnection -State Established | 
                 Where-Object { $ListeningPorts -contains $_.LocalPort } | 
@@ -140,20 +122,19 @@ try {
                 ForEach-Object { "$($_.RemoteAddress):$($_.RemotePort)" } | 
                 Sort-Object -Unique
             
-            $NewInboundConnections = @()
             foreach ($Endpoint in $CurrentInboundConnections) {
                 if (-not $LoggedInboundConnections.Contains($Endpoint)) {
                     $NewInboundConnections += $Endpoint
                     $null = $LoggedInboundConnections.Add($Endpoint)
                 }
             }
-            Log-Data -LogFilePath $InboundLogFile -Data $NewInboundConnections -ConnectionType "inbound"
-            Write-Host "  Found $($NewInboundConnections.Count) new inbound remote endpoints."
         }
+        
+        Log-Data -LogFilePath $InboundLogFile -Data $NewInboundConnections -ConnectionType "Inbound"
+        Write-Host "  Inbound: $($NewInboundConnections.Count) new endpoints"
 
-        # Add a separator to console output every 5 iterations for better readability
-        if ($IterationCount % 5 -eq 0) {
-            Write-Host "`n----- [Progress: $($IterationCount * $MonitoringIntervalSeconds / 60) minutes elapsed] -----`n"
+        if ($IterationCount % 6 -eq 0) {  # Every minute
+            Write-Host "`n----- [Progress: $($IterationCount / 6) minutes elapsed] -----`n"
         }
 
         Start-Sleep -Seconds $MonitoringIntervalSeconds
