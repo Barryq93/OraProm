@@ -1,159 +1,105 @@
-#!/bin/bash
+<#
+.SYNOPSIS
+Logs deduped inbound and outbound TCP connections for a specific PID over a 60-minute period.
 
-# Script to check tables and indexes needing REORG in DB2
-# Outputs to CSV: Table Name,Index Name,Reason (F1-F3 for tables with ---, F4-F8 for indexes with ----)
+.DESCRIPTION
+This script takes a Process ID (PID) as input and monitors both inbound and outbound
+TCP connections associated with that PID for a duration of 60 minutes. The script
+periodically samples the connections, dedupes the remote addresses for outbound
+connections and the remote endpoints for inbound connections, and logs them
+separately to text files.
 
-# Variables
-DB_NAME="your_db_name"  # Replace with your database name
-OUTPUT_FILE="reorg_check.out"
-TEMP_FILE="reorg_check_temp.out"
-CSV_FILE="reorg_needed.csv"
-DEBUG_FILE="reorg_debug.log"
+.PARAMETER PID
+The Process ID of the application to monitor.
 
-# Initialize debug log
-echo "Starting script at $(date)" > $DEBUG_FILE
+.EXAMPLE
+.\Monitor-ProcessConnections.ps1 -PID 1234
 
-# Ensure the database is connected
-echo "Connecting to database $DB_NAME..."
-db2 connect to $DB_NAME >> $DEBUG_FILE 2>&1
-if [ $? -ne 0 ]; then
-    echo "Error: Unable to connect to database $DB_NAME. Check $DEBUG_FILE for details."
-    exit 1
-fi
-echo "Connected to $DB_NAME" >> $DEBUG_FILE
+.NOTES
+- Requires administrative privileges to run effectively.
+- Logs will be saved in the same directory as the script.
+- Inbound connections are deduped based on the remote IP:Port.
+- Outbound connections are deduped based on the remote IP address.
+#>
+param(
+    [Parameter(Mandatory=$true)]
+    [int]$PID
+)
 
-# Run REORGCHK on all tables with current statistics
-echo "Running REORGCHK on all tables..."
-db2 "reorgchk current statistics on table all" > $OUTPUT_FILE 2>> $DEBUG_FILE
-if [ $? -ne 0 ]; then
-    echo "Error: REORGCHK command failed. Check $DEBUG_FILE for details."
-    exit 1
-fi
-echo "REORGCHK completed. Output written to $OUTPUT_FILE" >> $DEBUG_FILE
+# --- Configuration ---
+$ScriptName = $MyInvocation.MyCommand.Name
+$LogDirectory = Split-Path -Path $MyInvocation.MyCommand.Path -Parent
+$OutboundLogFile = Join-Path -Path $LogDirectory -ChildPath "$ScriptName-Outbound-$PID-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+$InboundLogFile = Join-Path -Path $LogDirectory -ChildPath "$ScriptName-Inbound-$PID-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+$MonitoringIntervalSeconds = 10
+$MonitoringDurationMinutes = 60
+$TotalIterations = ($MonitoringDurationMinutes * 60) / $MonitoringIntervalSeconds
+$IterationCount = 0
+$LoggedOutboundConnections = [System.Collections.Generic.HashSet[string]]::new()
+$LoggedInboundConnections = [System.Collections.Generic.HashSet[string]]::new()
 
-# Verify REORGCHK output
-if [ ! -s $OUTPUT_FILE ]; then
-    echo "Error: $OUTPUT_FILE is empty. REORGCHK produced no output."
-    echo "Check permissions, statistics, or DB2 version compatibility." >> $DEBUG_FILE
-    exit 1
-fi
-echo "REORGCHK output size: $(wc -l $OUTPUT_FILE | awk '{print $1}') lines" >> $DEBUG_FILE
+# --- Helper Function to Get Connections ---
+function Get-ProcessConnections {
+    param(
+        [Parameter(Mandatory=$true)]
+        [int]$ProcessId
+    )
+    $Connections = Get-NetTCPConnection -State Established | Where-Object {$_.OwningProcess -eq $ProcessId}
+    return $Connections
+}
 
-# Initialize CSV file with header
-echo "Table Name,Index Name,Reason" > $CSV_FILE
-echo "CSV initialized with header" >> $DEBUG_FILE
+# --- Helper Function to Log Data ---
+function Log-Data {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$LogFilePath,
+        [Parameter(Mandatory=$true)]
+        [string[]]$Data
+    )
+    if ($Data -and $Data.Count -gt 0) {
+        Add-Content -Path $LogFilePath -Value ($Data | Sort-Object -Unique)
+    }
+}
 
-# Parse the output for tables and indexes needing REORG
-echo "Analyzing REORGCHK output and generating CSV..."
+# --- Monitoring Loop ---
+Write-Host "Monitoring PID '$PID' for $MonitoringDurationMinutes minutes..."
 
-# Process table section
-echo "Parsing table section..." >> $DEBUG_FILE
-grep -A 1 "Table:" $OUTPUT_FILE | grep -E "Table:|\*" > $TEMP_FILE
-TABLE_COUNT=0
-while IFS= read -r line; do
-    echo "Processing table line: '$line'" >> $DEBUG_FILE
-    if [[ $line =~ ^Table:\ (.*) ]]; then
-        TABLE_NAME="${BASH_REMATCH[1]}"
-        REASON=""
-        echo "Found table: $TABLE_NAME" >> $DEBUG_FILE
-    elif [[ $line =~ .*\* ]]; then
-        REASON=""
-        fields=($(echo "$line" | tr -s ' ' | sed 's/^[ ]*//'))
-        echo "Table fields: ${fields[*]}" >> $DEBUG_FILE
-        for i in "${!fields[@]}"; do
-            if [[ "${fields[$i]}" =~ \* ]]; then
-                case $i in
-                    0) REASON="$REASON *F1 Overflow records" ;;
-                    1) REASON="$REASON *F2 Space utilization" ;;
-                    2) REASON="$REASON *F3 Fragmentation" ;;
-                esac
-            fi
-        done
-        # Fallback for summary asterisk (tables use --- instead of ----)
-        if [ -z "$REASON" ]; then
-            if [[ $line =~ --\*-- ]]; then
-                REASON="*F2 Space utilization"  # Three dashes, middle asterisk
-            elif [[ $line =~ \*%--- ]]; then
-                REASON="*F3 Fragmentation"  # Three dashes, leading asterisk
-            else
-                REASON="*Reorganization recommended"  # Catch-all
-            fi
-        fi
-        if [ -n "$TABLE_NAME" ] && [ -n "$REASON" ]; then
-            TABLE_NAME_ESCAPED=$(echo "$TABLE_NAME" | sed 's/,/\\,/g')
-            REASON_ESCAPED=$(echo "$REASON" | sed 's/,/\\,/g')
-            echo "Writing table to CSV: \"$TABLE_NAME_ESCAPED\",\"-\",\"$REASON_ESCAPED\"" >> $DEBUG_FILE
-            echo "\"$TABLE_NAME_ESCAPED\",\"-\",\"$REASON_ESCAPED\"" >> $CSV_FILE
-            ((TABLE_COUNT++))
-            echo "Table $TABLE_NAME needs REORG: $REASON" >> $DEBUG_FILE
-        else
-            echo "Error: TABLE_NAME or REASON is empty. TABLE_NAME='$TABLE_NAME', REASON='$REASON'" >> $DEBUG_FILE
-        fi
-    fi
-done < $TEMP_FILE
-echo "Processed $TABLE_COUNT tables needing REORG" >> $DEBUG_FILE
+while ($IterationCount -lt $TotalIterations) {
+    Write-Host "Iteration $($IterationCount + 1) of $TotalIterations..."
 
-# Process index section (unchanged, confirmed working)
-echo "Parsing index section..." >> $DEBUG_FILE
-grep -A 1 "Index:" $OUTPUT_FILE | grep -E "Index:|\*" > $TEMP_FILE
-INDEX_COUNT=0
-while IFS= read -r line; do
-    echo "Processing index line: '$line'" >> $DEBUG_FILE
-    if [[ $line =~ ^Index:\ (.*) ]]; then
-        INDEX_NAME="${BASH_REMATCH[1]}"
-        TABLE_NAME=$(echo "$INDEX_NAME" | cut -d'.' -f1-2)
-        REASON=""
-        echo "Found index: $INDEX_NAME" >> $DEBUG_FILE
-    elif [[ $line =~ .*\* ]]; then
-        REASON=""
-        fields=($(echo "$line" | tr -s ' ' | sed 's/^[ ]*//'))
-        echo "Index fields: ${fields[*]}" >> $DEBUG_FILE
-        for i in "${!fields[@]}"; do
-            if [[ "${fields[$i]}" =~ \* ]]; then
-                case $i in
-                    0) REASON="$REASON *F4 Clustering" ;;
-                    1) REASON="$REASON *F5 Page reorg" ;;
-                    2) REASON="$REASON *F6 Compression" ;;
-                    3) REASON="$REASON *F7" ;;
-                    4) REASON="$REASON *F8" ;;
-                esac
-            fi
-        done
-        # Fallback for summary asterisk (indexes use ----)
-        if [ -z "$REASON" ]; then
-            if [[ $line =~ --\*-- ]]; then
-                REASON="*F5 Page reorg"  # Four-dash context, but could be three
-            elif [[ $line =~ \*---- ]]; then
-                REASON="*F4 Clustering"  # Four dashes
-            else
-                REASON="*Reorganization recommended"
-            fi
-        fi
-        if [ -n "$TABLE_NAME" ] && [ -n "$INDEX_NAME" ] && [ -n "$REASON" ]; then
-            TABLE_NAME_ESCAPED=$(echo "$TABLE_NAME" | sed 's/,/\\,/g')
-            INDEX_NAME_ESCAPED=$(echo "$INDEX_NAME" | sed 's/,/\\,/g')
-            REASON_ESCAPED=$(echo "$REASON" | sed 's/,/\\,/g')
-            echo "Writing index to CSV: \"$TABLE_NAME_ESCAPED\",\"$INDEX_NAME_ESCAPED\",\"$REASON_ESCAPED\"" >> $DEBUG_FILE
-            echo "\"$TABLE_NAME_ESCAPED\",\"$INDEX_NAME_ESCAPED\",\"$REASON_ESCAPED\"" >> $CSV_FILE
-            ((INDEX_COUNT++))
-            echo "Index $INDEX_NAME needs REORG: $REASON" >> $DEBUG_FILE
-        else
-            echo "Error: TABLE_NAME, INDEX_NAME, or REASON is empty. TABLE_NAME='$TABLE_NAME', INDEX_NAME='$INDEX_NAME', REASON='$REASON'" >> $DEBUG_FILE
-        fi
-    fi
-done < $TEMP_FILE
-echo "Processed $INDEX_COUNT indexes needing REORG" >> $DEBUG_FILE
+    # --- Get Outbound Connections ---
+    $OutboundConnections = Get-ProcessConnections -ProcessId $PID
+    $CurrentOutboundRemoteAddresses = $OutboundConnections | Select-Object -ExpandProperty RemoteAddress | Sort-Object -Unique
+    $NewOutboundConnections = @()
+    foreach ($Address in $CurrentOutboundRemoteAddresses) {
+        if (-not $LoggedOutboundConnections.Contains($Address)) {
+            $NewOutboundConnections += $Address
+            $LoggedOutboundConnections.Add($Address)
+        }
+    }
+    Log-Data -LogFilePath $OutboundLogFile -Data $NewOutboundConnections
+    Write-Host "  Found $($NewOutboundConnections.Count) new outbound remote addresses."
 
-# Cleanup temporary files (commented out for debugging)
-# rm -f $OUTPUT_FILE $TEMP_FILE
+    # --- Get Inbound Connections (Listening Ports and Established) ---
+    $ListeningPorts = (Get-NetTCPListeningPort -OwningProcess $PID).LocalPort
+    $CurrentInboundConnections = @()
+    if ($ListeningPorts) {
+        $CurrentInboundConnections = Get-NetTCPConnection -LocalPort $ListeningPorts -State Established | Select-Object RemoteAddress, RemotePort | ForEach-Object {"$($_.RemoteAddress):$($_.RemotePort)"} | Sort-Object -Unique
+    }
+    $NewInboundConnections = @()
+    foreach ($Endpoint in $CurrentInboundConnections) {
+        if (-not $LoggedInboundConnections.Contains($Endpoint)) {
+            $NewInboundConnections += $Endpoint
+            $LoggedInboundConnections.Add($Endpoint)
+        }
+    }
+    Log-Data -LogFilePath $InboundLogFile -Data $NewInboundConnections
+    Write-Host "  Found $($NewInboundConnections.Count) new inbound remote endpoints."
 
-# Disconnect from the database
-db2 terminate >> $DEBUG_FILE 2>&1
+    $IterationCount++
+    Start-Sleep -Seconds $MonitoringIntervalSeconds
+}
 
-echo "-------------------------------------------------------------"
-echo "Analysis complete. Results written to $CSV_FILE"
-echo "Debug log available in $DEBUG_FILE"
-echo "Tables flagged: $TABLE_COUNT, Indexes flagged: $INDEX_COUNT"
-echo "If issues persist, check $DEBUG_FILE and $OUTPUT_FILE."
-echo "-------------------------------------------------------------"
-exit 0
+Write-Host "Monitoring complete. Logs saved to:"
+Write-Host "  Outbound: '$OutboundLogFile'"
+Write-Host "  Inbound: '$InboundLogFile'"
