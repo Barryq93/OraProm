@@ -107,8 +107,7 @@ function Log-Data {
     param(
         [string]$LogFilePath,
         [array]$Data,
-        [string]$ConnectionType,
-        [bool]$IncludePort = $false
+        [string]$ConnectionType
     )
     
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -119,15 +118,8 @@ function Log-Data {
         Add-Content -Path $LogFilePath -Value $logEntry
         
         $formattedEntries = foreach ($entry in $Data) {
-            if ($IncludePort) {
-                $ip = $entry.Split(':')[0]
-                $port = $entry.Split(':')[1]
-                $hostname = Get-HostnameFromIP -IPAddress $ip
-                "$entry - $hostname"
-            } else {
-                $hostname = Get-HostnameFromIP -IPAddress $entry
-                "$entry - $hostname"
-            }
+            $hostname = Get-HostnameFromIP -IPAddress $entry
+            "$entry - $hostname"
         }
         
         Add-Content -Path $LogFilePath -Value ($formattedEntries | Sort-Object -Unique)
@@ -171,19 +163,18 @@ try {
         if ($ListeningPorts) {
             $CurrentInboundConnections = Get-NetTCPConnection -State Established | 
                 Where-Object { $ListeningPorts -contains $_.LocalPort } | 
-                Select-Object RemoteAddress, RemotePort | 
-                ForEach-Object { "$($_.RemoteAddress):$($_.RemotePort)" } | 
+                Select-Object -ExpandProperty RemoteAddress |
                 Sort-Object -Unique
             
-            foreach ($Endpoint in $CurrentInboundConnections) {
-                if (-not $LoggedInboundConnections.Contains($Endpoint)) {
-                    $NewInboundConnections += $Endpoint
-                    $null = $LoggedInboundConnections.Add($Endpoint)
+            foreach ($Address in $CurrentInboundConnections) {
+                if (-not $LoggedInboundConnections.Contains($Address)) {
+                    $NewInboundConnections += $Address
+                    $null = $LoggedInboundConnections.Add($Address)
                 }
             }
         }
         
-        Log-Data -LogFilePath $InboundLogFile -Data $NewInboundConnections -ConnectionType "Inbound" -IncludePort $true
+        Log-Data -LogFilePath $InboundLogFile -Data $NewInboundConnections -ConnectionType "Inbound"
         Write-Host "  Inbound: $($NewInboundConnections.Count) new endpoints"
 
         if ($IterationCount % 6 -eq 0) {
