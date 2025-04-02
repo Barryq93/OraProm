@@ -7,8 +7,7 @@ This script monitors both inbound and outbound TCP connections associated with a
 hardcoded Process ID (PID) for a duration of 60 minutes. The script periodically
 samples the connections, dedupes the remote addresses for outbound connections
 and the remote endpoints for inbound connections, and logs them separately to
-text files. This version uses `netstat` to gather listening port information
-for compatibility with PowerShell versions that may not have the NetTCPIP module.
+text files with timestamps.
 
 .NOTES
 - Requires administrative privileges to run effectively.
@@ -21,8 +20,9 @@ for compatibility with PowerShell versions that may not have the NetTCPIP module
 # --- Configuration ---
 $ScriptName = $MyInvocation.MyCommand.Name
 $LogDirectory = Split-Path -Path $MyInvocation.MyCommand.Path -Parent
-$OutboundLogFile = Join-Path -Path $LogDirectory -ChildPath "$ScriptName-Outbound-HARDCODED-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
-$InboundLogFile = Join-Path -Path $LogDirectory -ChildPath "$ScriptName-Inbound-HARDCODED-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+$Timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$OutboundLogFile = Join-Path -Path $LogDirectory -ChildPath "$ScriptName-Outbound-HARDCODED-$Timestamp.log"
+$InboundLogFile = Join-Path -Path $LogDirectory -ChildPath "$ScriptName-Inbound-HARDCODED-$Timestamp.log"
 $MonitoringIntervalSeconds = 10
 $MonitoringDurationMinutes = 60
 $TotalIterations = ($MonitoringDurationMinutes * 60) / $MonitoringIntervalSeconds
@@ -33,81 +33,151 @@ $LoggedInboundConnections = [System.Collections.Generic.HashSet[string]]::new()
 # --- HARDCODED PID ---
 $PIDToMonitor = 12345 # Replace 12345 with the actual PID you want to monitor
 
+# --- Validate PID exists ---
+try {
+    $Process = Get-Process -Id $PIDToMonitor -ErrorAction Stop
+    Write-Host "Monitoring process: [$($Process.ProcessName)] (PID: $PIDToMonitor) for $MonitoringDurationMinutes minutes..."
+} catch {
+    Write-Error "Process with PID $PIDToMonitor not found or inaccessible. Exiting."
+    exit 1
+}
+
+# --- Initialize Log Files with Header ---
+$Header = @"
+=== TCP Connection Monitor ===
+Start Time: $(Get-Date)
+Monitoring PID: $PIDToMonitor
+Process Name: $($Process.ProcessName)
+Monitoring Interval: $MonitoringIntervalSeconds seconds
+Total Duration: $MonitoringDurationMinutes minutes
+"@
+
+Add-Content -Path $OutboundLogFile -Value $Header
+Add-Content -Path $InboundLogFile -Value $Header
+
 # --- Helper Function to Get Established Connections for a PID ---
 function Get-EstablishedProcessConnections {
     param(
         [Parameter(Mandatory=$true)]
         [int]$ProcessId
     )
-    Get-NetTCPConnection -State Established | Where-Object {$_.OwningProcess -eq $ProcessId}
+    
+    try {
+        Get-NetTCPConnection -State Established -ErrorAction Stop | Where-Object {$_.OwningProcess -eq $ProcessId}
+    } catch {
+        Write-Warning "Error retrieving TCP connections: $_"
+        return $null
+    }
 }
 
-# --- Helper Function to Log Data ---
+# --- Helper Function to Get Listening Ports for a PID ---
+function Get-ProcessListeningPorts {
+    param(
+        [Parameter(Mandatory=$true)]
+        [int]$ProcessId
+    )
+    
+    try {
+        Get-NetTCPConnection -State Listen -ErrorAction Stop | Where-Object {$_.OwningProcess -eq $ProcessId} | 
+        Select-Object -ExpandProperty LocalPort -Unique
+    } catch {
+        Write-Warning "Error retrieving listening ports: $_"
+        return @()
+    }
+}
+
+# --- Helper Function to Log Data with Timestamp ---
 function Log-Data {
     param(
         [Parameter(Mandatory=$true)]
         [string]$LogFilePath,
         [Parameter(Mandatory=$true)]
-        [string[]]$Data
+        [string[]]$Data,
+        [string]$ConnectionType
     )
+    
     if ($Data -and $Data.Count -gt 0) {
-        Add-Content -Path $LogFilePath -Value ($Data | Sort-Object -Unique)
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $logEntry = @()
+        $logEntry += "`n[$timestamp] New $ConnectionType connections ($($Data.Count)):"
+        $logEntry += $Data | Sort-Object -Unique
+        Add-Content -Path $LogFilePath -Value $logEntry
     }
 }
 
 # --- Monitoring Loop ---
-Write-Host "Monitoring PID '$PIDToMonitor' for $MonitoringDurationMinutes minutes..."
+try {
+    while ($IterationCount -lt $TotalIterations) {
+        $IterationCount++
+        $CurrentTime = Get-Date -Format "HH:mm:ss"
+        Write-Host "[$CurrentTime] Iteration $IterationCount of $TotalIterations..."
 
-while ($IterationCount -lt $TotalIterations) {
-    Write-Host "Iteration $($IterationCount + 1) of $TotalIterations..."
-
-    # --- Get Outbound Connections ---
-    $OutboundConnections = Get-EstablishedProcessConnections -ProcessId $PIDToMonitor
-    $CurrentOutboundRemoteAddresses = $OutboundConnections | Select-Object -ExpandProperty RemoteAddress | Sort-Object -Unique
-    $NewOutboundConnections = @()
-    foreach ($Address in $CurrentOutboundRemoteAddresses) {
-        if (-not $LoggedOutboundConnections.Contains($Address)) {
-            $NewOutboundConnections += $Address
-            $LoggedOutboundConnections.Add($Address)
+        # --- Get Outbound Connections ---
+        $OutboundConnections = Get-EstablishedProcessConnections -ProcessId $PIDToMonitor
+        if ($OutboundConnections) {
+            $CurrentOutboundRemoteAddresses = $OutboundConnections | 
+                Select-Object -ExpandProperty RemoteAddress | 
+                Where-Object { $_ -notlike '*::*' } |  # Exclude IPv6 if desired
+                Sort-Object -Unique
+            
+            $NewOutboundConnections = @()
+            foreach ($Address in $CurrentOutboundRemoteAddresses) {
+                if (-not $LoggedOutboundConnections.Contains($Address)) {
+                    $NewOutboundConnections += $Address
+                    $null = $LoggedOutboundConnections.Add($Address)
+                }
+            }
+            Log-Data -LogFilePath $OutboundLogFile -Data $NewOutboundConnections -ConnectionType "outbound"
+            Write-Host "  Found $($NewOutboundConnections.Count) new outbound remote addresses."
         }
-    }
-    Log-Data -LogFilePath $OutboundLogFile -Data $NewOutboundConnections
-    Write-Host "  Found $($NewOutboundConnections.Count) new outbound remote addresses."
 
-    # --- Get Inbound Connections (Listening Ports via netstat and Established Connections) ---
-    $NetstatOutput = netstat -ano | Select-String -Pattern "LISTENING.*$PIDToMonitor"
-    $ListeningPorts = @()
-    foreach ($Line in $NetstatOutput) {
-        if ($Line -match ":(\d+)\s+0\.0\.0\.0") {
-            $ListeningPorts += $Matches[1]
-        } elseif ($Line -match "\[::]:(\d+)\s+::") {
-            $ListeningPorts += $Matches[1]
-        } elseif ($Line -match "(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d+)\s+0\.0\.0\.0") {
-            $ListeningPorts += $Matches[2]
-        } elseif ($Line -match "\[([0-9a-fA-F:]+)\]:(\d+)\s+::") {
-            $ListeningPorts += $Matches[2]
+        # --- Get Inbound Connections ---
+        $ListeningPorts = Get-ProcessListeningPorts -ProcessId $PIDToMonitor
+        if ($ListeningPorts) {
+            $CurrentInboundConnections = Get-NetTCPConnection -State Established | 
+                Where-Object { $ListeningPorts -contains $_.LocalPort } | 
+                Select-Object RemoteAddress, RemotePort | 
+                ForEach-Object { "$($_.RemoteAddress):$($_.RemotePort)" } | 
+                Sort-Object -Unique
+            
+            $NewInboundConnections = @()
+            foreach ($Endpoint in $CurrentInboundConnections) {
+                if (-not $LoggedInboundConnections.Contains($Endpoint)) {
+                    $NewInboundConnections += $Endpoint
+                    $null = $LoggedInboundConnections.Add($Endpoint)
+                }
+            }
+            Log-Data -LogFilePath $InboundLogFile -Data $NewInboundConnections -ConnectionType "inbound"
+            Write-Host "  Found $($NewInboundConnections.Count) new inbound remote endpoints."
         }
-    }
-    $ListeningPorts = $ListeningPorts | Sort-Object -Unique
 
-    $CurrentInboundConnections = @()
-    if ($ListeningPorts) {
-        $CurrentInboundConnections = Get-NetTCPConnection -State Established | Where-Object {$ListeningPorts -contains $_.LocalPort} | Select-Object RemoteAddress, RemotePort | ForEach-Object {"$($_.RemoteAddress):$($_.RemotePort)"} | Sort-Object -Unique
-    }
-    $NewInboundConnections = @()
-    foreach ($Endpoint in $CurrentInboundConnections) {
-        if (-not $LoggedInboundConnections.Contains($Endpoint)) {
-            $NewInboundConnections += $Endpoint
-            $LoggedInboundConnections.Add($Endpoint)
+        # Add a separator to console output every 5 iterations for better readability
+        if ($IterationCount % 5 -eq 0) {
+            Write-Host "`n----- [Progress: $($IterationCount * $MonitoringIntervalSeconds / 60) minutes elapsed] -----`n"
         }
-    }
-    Log-Data -LogFilePath $InboundLogFile -Data $NewInboundConnections
-    Write-Host "  Found $($NewInboundConnections.Count) new inbound remote endpoints."
 
-    $IterationCount++
-    Start-Sleep -Seconds $MonitoringIntervalSeconds
+        Start-Sleep -Seconds $MonitoringIntervalSeconds
+    }
+} catch {
+    Write-Error "Monitoring error: $_"
+} finally {
+    # --- Final Summary ---
+    $Summary = @"
+
+=== Monitoring Summary ===
+End Time: $(Get-Date)
+Total Iterations: $IterationCount
+Unique Outbound Addresses: $($LoggedOutboundConnections.Count)
+Unique Inbound Endpoints: $($LoggedInboundConnections.Count)
+"@
+
+    Add-Content -Path $OutboundLogFile -Value $Summary
+    Add-Content -Path $InboundLogFile -Value $Summary
+
+    Write-Host "`nMonitoring complete. Logs saved to:"
+    Write-Host "  Outbound: '$OutboundLogFile'"
+    Write-Host "  Inbound: '$InboundLogFile'"
+    Write-Host "`nSummary:"
+    Write-Host "  Unique Outbound Addresses: $($LoggedOutboundConnections.Count)"
+    Write-Host "  Unique Inbound Endpoints: $($LoggedInboundConnections.Count)"
 }
-
-Write-Host "Monitoring complete. Logs saved to:"
-Write-Host "  Outbound: '$OutboundLogFile'"
-Write-Host "  Inbound: '$InboundLogFile'"
