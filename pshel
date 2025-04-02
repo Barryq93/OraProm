@@ -15,7 +15,7 @@ $TotalIterations = ($MonitoringDurationMinutes * 60) / $MonitoringIntervalSecond
 $IterationCount = 0
 $LoggedOutboundConnections = [System.Collections.Generic.HashSet[string]]::new()
 $LoggedInboundConnections = [System.Collections.Generic.HashSet[string]]::new()
-$DNS_Cache = @{} # Cache for DNS lookups to improve performance
+$DNS_Cache = @{}
 
 # --- HARDCODED PID ---
 $PIDToMonitor = 12345 # Replace with your actual PID
@@ -67,8 +67,8 @@ function Get-ProcessListeningPorts {
 function Get-HostnameFromIP {
     param([string]$IPAddress)
     
-    # Skip local and multicast addresses
-    if ($IPAddress -match '^(127\.|169\.254\.|224\.|192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)') {
+    # Only mark actual localhost as local
+    if ($IPAddress -eq '127.0.0.1' -or $IPAddress -eq '::1') {
         return "local"
     }
     
@@ -85,15 +85,14 @@ function Get-HostnameFromIP {
         }
         $DNS_Cache[$IPAddress] = $hostname
         return $hostname
-    } catch [System.Management.Automation.CommandNotFoundException] {
+    } catch {
         try {
-            # Fallback to nslookup if Resolve-DnsName isn't available
-            $result = nslookup $IPAddress 2>$null | Select-String "Name:" | ForEach-Object {
-                $_.Line.Split(':')[1].Trim()
-            }
-            if ($result) {
-                $DNS_Cache[$IPAddress] = $result
-                return $result
+            # Fallback to nslookup
+            $nslookup = nslookup $IPAddress 2>$null
+            if ($nslookup -match "Name:\s+(\S+)") {
+                $hostname = $matches[1]
+                $DNS_Cache[$IPAddress] = $hostname
+                return $hostname
             }
             $DNS_Cache[$IPAddress] = "CANNOT_RESOLVE"
             return "CANNOT_RESOLVE"
@@ -101,9 +100,6 @@ function Get-HostnameFromIP {
             $DNS_Cache[$IPAddress] = "CANNOT_RESOLVE"
             return "CANNOT_RESOLVE"
         }
-    } catch {
-        $DNS_Cache[$IPAddress] = "CANNOT_RESOLVE"
-        return "CANNOT_RESOLVE"
     }
 }
 
@@ -122,25 +118,21 @@ function Log-Data {
         $logEntry += " - Found $($Data.Count) new:"
         Add-Content -Path $LogFilePath -Value $logEntry
         
-        $formattedEntries = @()
-        foreach ($entry in $Data) {
+        $formattedEntries = foreach ($entry in $Data) {
             if ($IncludePort) {
-                # For inbound: IP:PORT format
                 $ip = $entry.Split(':')[0]
                 $port = $entry.Split(':')[1]
                 $hostname = Get-HostnameFromIP -IPAddress $ip
-                $formattedEntries += "$entry - $hostname"
+                "$entry - $hostname"
             } else {
-                # For outbound: IP only
                 $hostname = Get-HostnameFromIP -IPAddress $entry
-                $formattedEntries += "$entry - $hostname"
+                "$entry - $hostname"
             }
         }
         
         Add-Content -Path $LogFilePath -Value ($formattedEntries | Sort-Object -Unique)
     } else {
-        $logEntry += " - No new connections found"
-        Add-Content -Path $LogFilePath -Value $logEntry
+        Add-Content -Path $LogFilePath -Value "$logEntry - No new connections found"
     }
 }
 
@@ -158,7 +150,7 @@ try {
         if ($OutboundConnections) {
             $CurrentOutboundRemoteAddresses = $OutboundConnections | 
                 Select-Object -ExpandProperty RemoteAddress | 
-                Where-Object { $_ -notlike '*::*' } |  # Exclude IPv6 if desired
+                Where-Object { $_ -notlike '*::*' } |
                 Sort-Object -Unique
             
             foreach ($Address in $CurrentOutboundRemoteAddresses) {
@@ -194,7 +186,7 @@ try {
         Log-Data -LogFilePath $InboundLogFile -Data $NewInboundConnections -ConnectionType "Inbound" -IncludePort $true
         Write-Host "  Inbound: $($NewInboundConnections.Count) new endpoints"
 
-        if ($IterationCount % 6 -eq 0) {  # Every minute
+        if ($IterationCount % 6 -eq 0) {
             Write-Host "`n----- [Progress: $($IterationCount / 6) minutes elapsed] -----`n"
         }
 
