@@ -33,24 +33,30 @@ mkdir -p $LOG_DIR
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 SUMMARY_LOG="$LOG_DIR/reorg_summary_${MODE}_${TIMESTAMP}.log"
 echo "DB2 Reorganization $MODE started at $(date)" > $SUMMARY_LOG
+TOTAL_START_TIME=$(date +%s)
 echo "Time window: 4 hours" >> $SUMMARY_LOG
-
-# Connect to the database
-db2 connect to $DB_NAME user $DB_USER using $DB_PASS
 
 # Function to estimate reorg time based on table size
 estimate_time() {
     SIZE_GB=$1
-    # Estimated time in minutes: roughly 1 minute per GB for combined data+index
-    # Adjust these values based on your actual performance observations
-    if [ $(echo "$SIZE_GB > 50" | bc) -eq 1 ]; then
-        # Larger tables have more overhead
-        EST_MINS=$(echo "scale=0; $SIZE_GB * 1.2" | bc)
+    # Use awk for floating-point comparison and calculation
+    if [ $(awk "BEGIN {print ($SIZE_GB > 50) ? 1 : 0}") -eq 1 ]; then
+        # Larger tables have more overhead (1.2x)
+        EST_MINS=$(awk "BEGIN {printf \"%.0f\", $SIZE_GB * 1.2}")
     else
-        EST_MINS=$(echo "scale=0; $SIZE_GB" | bc)
+        EST_MINS=$(awk "BEGIN {printf \"%.0f\", $SIZE_GB}")
     fi
+    # Ensure EST_MINS is at least 1
+    [ "$EST_MINS" -lt 1 ] && EST_MINS=1
     echo $EST_MINS
 }
+
+# Connect to the database
+db2 connect to $DB_NAME user $DB_USER using $DB_PASS
+if [ $? -ne 0 ]; then
+    echo "ERROR: Failed to connect to database $DB_NAME" | tee -a $SUMMARY_LOG
+    exit 1
+fi
 
 # Function to run reorg on a single table
 run_reorg() {
@@ -156,7 +162,7 @@ echo "Small tables count: $SMALL_COUNT" | tee -a $SUMMARY_LOG
 SMALL_TOTAL_SIZE=0
 while read -r TABLE_INFO; do
     SIZE_GB=$(echo $TABLE_INFO | cut -d'.' -f3)
-    SMALL_TOTAL_SIZE=$(echo "$SMALL_TOTAL_SIZE + $SIZE_GB" | bc)
+    SMALL_TOTAL_SIZE=$(awk "BEGIN {printf \"%.2f\", $SMALL_TOTAL_SIZE + $SIZE_GB}")
     
     if [ "$MODE" = "estimate" ]; then
         SCHEMA_NAME=$(echo $TABLE_INFO | cut -d'.' -f1)
@@ -167,13 +173,13 @@ while read -r TABLE_INFO; do
 done < small_tables.txt
 
 # Estimate small tables time (divided by concurrency)
-SMALL_EST_MINS=$(echo "scale=0; $SMALL_TOTAL_SIZE / $MAX_CONCURRENT_JOBS" | bc)
+SMALL_EST_MINS=$(awk "BEGIN {printf \"%.0f\", $SMALL_TOTAL_SIZE / $MAX_CONCURRENT_JOBS}")
 TOTAL_EST_MINS=$((TOTAL_EST_MINS + SMALL_EST_MINS))
 
-TOTAL_EST_HRS=$(echo "scale=1; $TOTAL_EST_MINS / 60" | bc)
+TOTAL_EST_HRS=$(awk "BEGIN {printf \"%.1f\", $TOTAL_EST_MINS / 60}")
 echo "Total estimated time: $TOTAL_EST_MINS minutes ($TOTAL_EST_HRS hours)" | tee -a $SUMMARY_LOG
 
-if (( $(echo "$TOTAL_EST_HRS > 4" | bc -l) )); then
+if [ $(awk "BEGIN {print ($TOTAL_EST_HRS > 4) ? 1 : 0}") -eq 1 ]; then
     echo "WARNING: Estimated time exceeds 4-hour window!" | tee -a $SUMMARY_LOG
 fi
 
@@ -200,7 +206,7 @@ while read -r TABLE_INFO; do
     SIZE_GB=$(echo $TABLE_INFO | cut -d'.' -f3)
     run_reorg "$TABLE_NAME" "$SCHEMA_NAME" "$SIZE_GB"
     TABLES_DONE=$((TABLES_DONE + 1))
-    PCT_DONE=$(echo "scale=2; $TABLES_DONE * 100 / $TOTAL_TABLES" | bc)
+    PCT_DONE=$(awk "BEGIN {printf \"%.2f\", $TABLES_DONE * 100 / $TOTAL_TABLES}")
     echo "Progress: $TABLES_DONE/$TOTAL_TABLES tables done ($PCT_DONE%)" | tee -a $SUMMARY_LOG
 done < very_large_tables.txt
 
@@ -213,7 +219,7 @@ while read -r TABLE_INFO; do
     SIZE_GB=$(echo $TABLE_INFO | cut -d'.' -f3)
     run_reorg "$TABLE_NAME" "$SCHEMA_NAME" "$SIZE_GB"
     TABLES_DONE=$((TABLES_DONE + 1))
-    PCT_DONE=$(echo "scale=2; $TABLES_DONE * 100 / $TOTAL_TABLES" | bc)
+    PCT_DONE=$(awk "BEGIN {printf \"%.2f\", $TABLES_DONE * 100 / $TOTAL_TABLES}")
     echo "Progress: $TABLES_DONE/$TOTAL_TABLES tables done ($PCT_DONE%)" | tee -a $SUMMARY_LOG
 done < large_tables.txt
 
@@ -243,7 +249,6 @@ wait
 
 # Final summary
 TOTAL_END_TIME=$(date +%s)
-TOTAL_START_TIME=$(stat -c %Y $SUMMARY_LOG)
 TOTAL_DURATION=$((TOTAL_END_TIME - TOTAL_START_TIME))
 TOTAL_HOURS=$((TOTAL_DURATION / 3600))
 TOTAL_MINUTES=$(( (TOTAL_DURATION % 3600) / 60 ))
