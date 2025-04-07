@@ -1,68 +1,127 @@
 #!/bin/bash
 
-# --- Configuration ---
-# Add the directories you want to monitor to this array
-TARGET_DIRS=(
-    "/path/to/your/first/directory"
-    "/path/to/your/second/directory"
-    # Add more directories here if needed
-)
-# Set the desired permissions in octal format
-DESIRED_PERMS="755"
-# Set the path for the log file
-LOG_FILE="/var/log/permission_checker.log"
-# --- End Configuration ---
+# DB2 Reorganization Script
+# This script dynamically identifies tables by size and reorganizes them
+# Large tables are processed sequentially, small tables in parallel
 
-EXIT_CODE=0 # Track overall success/failure for the script run
+# Set environment variables (adjust as needed)
+DB_NAME="your_database_name"
+DB_USER="your_db_user"
+DB_PASS="your_db_password"
+MAX_CONCURRENT_JOBS=3  # Number of concurrent reorg jobs for small tables
+LARGE_TABLE_THRESHOLD=20  # Tables larger than this (in GB) will be processed individually
+VERY_LARGE_TABLE_THRESHOLD=50  # Tables larger than this (in GB) will be processed first
 
-# Function to simplify logging
-log_message() {
-    # Appends timestamp and message to the log file
-    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
+# Directory for logs
+LOG_DIR="/path/to/logs"
+mkdir -p $LOG_DIR
+
+# Summary log file
+SUMMARY_LOG="$LOG_DIR/reorg_summary_$(date +%Y%m%d_%H%M%S).log"
+echo "DB2 Reorganization started at $(date)" > $SUMMARY_LOG
+
+# Connect to the database
+db2 connect to $DB_NAME user $DB_USER using $DB_PASS
+
+# Function to run reorg on a single table
+run_reorg() {
+    TABLE_NAME=$1
+    SCHEMA_NAME=$2
+    TABLE_SIZE=$3  # Size in GB
+    LOG_FILE="$LOG_DIR/reorg_${SCHEMA_NAME}_${TABLE_NAME}_$(date +%Y%m%d_%H%M%S).log"
+    
+    echo "Starting reorg for $SCHEMA_NAME.$TABLE_NAME (${TABLE_SIZE}GB) at $(date)" | tee -a "$LOG_FILE" $SUMMARY_LOG
+    
+    db2 "REORG TABLE $SCHEMA_NAME.$TABLE_NAME SORTKEYS LONGLOBDATA" >> "$LOG_FILE" 2>&1
+    REORG_STATUS=$?
+    
+    if [ $REORG_STATUS -eq 0 ]; then
+        echo "Completed reorg for $SCHEMA_NAME.$TABLE_NAME successfully at $(date)" | tee -a "$LOG_FILE" $SUMMARY_LOG
+    else
+        echo "ERROR: Reorg for $SCHEMA_NAME.$TABLE_NAME failed with status $REORG_STATUS at $(date)" | tee -a "$LOG_FILE" $SUMMARY_LOG
+    fi
 }
 
-# Ensure log directory exists (optional, depends on location)
-# log_dir=$(dirname "$LOG_FILE")
-# if [ ! -d "$log_dir" ]; then
-#    mkdir -p "$log_dir" || { echo "ERROR: Cannot create log directory $log_dir"; exit 1; }
-# fi
-# touch "$LOG_FILE" || { echo "ERROR: Cannot create log file $LOG_FILE"; exit 1; }
-# chmod 640 "$LOG_FILE" # Example permissions
+# Get the list of all tables by size
+echo "Identifying tables that need reorganization by size..." | tee -a $SUMMARY_LOG
 
-# Loop through each directory specified in the TARGET_DIRS array
-for target_dir in "${TARGET_DIRS[@]}"; do
-    # Check if the target directory exists
-    if [ ! -d "$target_dir" ]; then
-        log_message "WARNING: Directory '$target_dir' not found. Skipping."
-        continue # Move to the next directory in the list
-    fi
+# Get very large tables (>50GB)
+echo "Finding very large tables (>${VERY_LARGE_TABLE_THRESHOLD}GB)..." | tee -a $SUMMARY_LOG
+db2 -x "SELECT RTRIM(TABSCHEMA) || '.' || RTRIM(TABNAME) || '.' || 
+          CAST(CAST(DATA_OBJECT_P_SIZE AS DECIMAL(15,2))/1024/1024 AS DECIMAL(15,2)) 
+        FROM SYSIBMADM.ADMINTABINFO 
+        WHERE DATA_OBJECT_P_SIZE > $VERY_LARGE_TABLE_THRESHOLD * 1024 * 1024
+        AND TABSCHEMA NOT LIKE 'SYS%'
+        ORDER BY DATA_OBJECT_P_SIZE DESC" > very_large_tables.txt
 
-    # Get current permissions in octal format
-    CURRENT_PERMS=$(stat -c "%a" "$target_dir")
+# Get large tables (20-50GB)
+echo "Finding large tables (${LARGE_TABLE_THRESHOLD}-${VERY_LARGE_TABLE_THRESHOLD}GB)..." | tee -a $SUMMARY_LOG
+db2 -x "SELECT RTRIM(TABSCHEMA) || '.' || RTRIM(TABNAME) || '.' || 
+          CAST(CAST(DATA_OBJECT_P_SIZE AS DECIMAL(15,2))/1024/1024 AS DECIMAL(15,2)) 
+        FROM SYSIBMADM.ADMINTABINFO 
+        WHERE DATA_OBJECT_P_SIZE > $LARGE_TABLE_THRESHOLD * 1024 * 1024
+        AND DATA_OBJECT_P_SIZE <= $VERY_LARGE_TABLE_THRESHOLD * 1024 * 1024
+        AND TABSCHEMA NOT LIKE 'SYS%'
+        ORDER BY DATA_OBJECT_P_SIZE DESC" > large_tables.txt
 
-    # Check if current permissions match the desired permissions
-    if [ "$CURRENT_PERMS" != "$DESIRED_PERMS" ]; then
-        log_message "INFO: Permissions for '$target_dir' were '$CURRENT_PERMS'. Changing to '$DESIRED_PERMS'."
-        # Attempt to change permissions
-        if chmod "$DESIRED_PERMS" "$target_dir"; then
-            # Verify the change (optional but good practice)
-            NEW_PERMS=$(stat -c "%a" "$target_dir")
-            if [ "$NEW_PERMS" == "$DESIRED_PERMS" ]; then
-                log_message "SUCCESS: Permissions for '$target_dir' successfully changed to '$DESIRED_PERMS'."
-            else
-                log_message "ERROR: Chmod reported success for '$target_dir', but permissions are now '$NEW_PERMS' (expected '$DESIRED_PERMS')."
-                EXIT_CODE=1 # Indicate an error occurred
-            fi
-        else
-            # chmod command failed
-            log_message "ERROR: Failed to change permissions for '$target_dir' to '$DESIRED_PERMS'."
-            EXIT_CODE=1 # Indicate an error occurred
-        fi
-    else
-        # Optional: Log that permissions were already correct - uncomment if needed
-        # log_message "INFO: Permissions for '$target_dir' are already '$DESIRED_PERMS'. No action taken."
-        : # Do nothing if permissions are correct
-    fi
-done # End of directory loop
+# Get small tables (<20GB)
+echo "Finding small tables (<${LARGE_TABLE_THRESHOLD}GB)..." | tee -a $SUMMARY_LOG
+db2 -x "SELECT RTRIM(TABSCHEMA) || '.' || RTRIM(TABNAME) || '.' || 
+          CAST(CAST(DATA_OBJECT_P_SIZE AS DECIMAL(15,2))/1024/1024 AS DECIMAL(15,2)) 
+        FROM SYSIBMADM.ADMINTABINFO 
+        WHERE DATA_OBJECT_P_SIZE <= $LARGE_TABLE_THRESHOLD * 1024 * 1024
+        AND TABSCHEMA NOT LIKE 'SYS%'
+        ORDER BY DATA_OBJECT_P_SIZE DESC" > small_tables.txt
 
-exit $EXIT_CODE
+# Process the very large tables first (sequentially)
+VERY_LARGE_COUNT=$(wc -l < very_large_tables.txt)
+echo "Processing $VERY_LARGE_COUNT very large tables sequentially..." | tee -a $SUMMARY_LOG
+
+while read -r TABLE_INFO; do
+    SCHEMA_NAME=$(echo $TABLE_INFO | cut -d'.' -f1)
+    TABLE_NAME=$(echo $TABLE_INFO | cut -d'.' -f2)
+    TABLE_SIZE=$(echo $TABLE_INFO | cut -d'.' -f3)
+    run_reorg "$TABLE_NAME" "$SCHEMA_NAME" "$TABLE_SIZE"
+done < very_large_tables.txt
+
+# Process the large tables next (sequentially)
+LARGE_COUNT=$(wc -l < large_tables.txt)
+echo "Processing $LARGE_COUNT large tables sequentially..." | tee -a $SUMMARY_LOG
+
+while read -r TABLE_INFO; do
+    SCHEMA_NAME=$(echo $TABLE_INFO | cut -d'.' -f1)
+    TABLE_NAME=$(echo $TABLE_INFO | cut -d'.' -f2)
+    TABLE_SIZE=$(echo $TABLE_INFO | cut -d'.' -f3)
+    run_reorg "$TABLE_NAME" "$SCHEMA_NAME" "$TABLE_SIZE"
+done < large_tables.txt
+
+# Process smaller tables in parallel
+SMALL_COUNT=$(wc -l < small_tables.txt)
+echo "Processing $SMALL_COUNT small tables in parallel batches..." | tee -a $SUMMARY_LOG
+
+# Process tables in batches, limited by MAX_CONCURRENT_JOBS
+cat small_tables.txt | while read -r TABLE_INFO; do
+    # Check how many reorg jobs are currently running
+    while [ $(jobs -p | wc -l) -ge $MAX_CONCURRENT_JOBS ]; do
+        sleep 5
+    done
+    
+    SCHEMA_NAME=$(echo $TABLE_INFO | cut -d'.' -f1)
+    TABLE_NAME=$(echo $TABLE_INFO | cut -d'.' -f2)
+    TABLE_SIZE=$(echo $TABLE_INFO | cut -d'.' -f3)
+    
+    # Run the reorg job in the background
+    run_reorg "$TABLE_NAME" "$SCHEMA_NAME" "$TABLE_SIZE" &
+    
+    # Wait a moment to prevent too many jobs starting simultaneously
+    sleep 2
+done
+
+# Wait for all background jobs to complete
+wait
+echo "All reorganization jobs completed at $(date)" | tee -a $SUMMARY_LOG
+
+# Disconnect from the database
+db2 terminate
+
+echo "DB2 reorganization process completed. See summary log: $SUMMARY_LOG" | tee -a $SUMMARY_LOG
