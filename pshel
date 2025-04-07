@@ -1,210 +1,68 @@
-<#
-.SYNOPSIS
-Logs deduped inbound and outbound TCP connections with hostname resolution for a hardcoded PID.
-#>
+#!/bin/bash
 
 # --- Configuration ---
-$ScriptName = $MyInvocation.MyCommand.Name
-$LogDirectory = Split-Path -Path $MyInvocation.MyCommand.Path -Parent
-$Timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$OutboundLogFile = Join-Path -Path $LogDirectory -ChildPath "$ScriptName-Outbound-HARDCODED-$Timestamp.log"
-$InboundLogFile = Join-Path -Path $LogDirectory -ChildPath "$ScriptName-Inbound-HARDCODED-$Timestamp.log"
-$MonitoringIntervalSeconds = 10
-$MonitoringDurationMinutes = 60
-$TotalIterations = ($MonitoringDurationMinutes * 60) / $MonitoringIntervalSeconds
-$IterationCount = 0
-$LoggedOutboundConnections = [System.Collections.Generic.HashSet[string]]::new()
-$LoggedInboundConnections = [System.Collections.Generic.HashSet[string]]::new()
-$DNS_Cache = @{}
+# Add the directories you want to monitor to this array
+TARGET_DIRS=(
+    "/path/to/your/first/directory"
+    "/path/to/your/second/directory"
+    # Add more directories here if needed
+)
+# Set the desired permissions in octal format
+DESIRED_PERMS="755"
+# Set the path for the log file
+LOG_FILE="/var/log/permission_checker.log"
+# --- End Configuration ---
 
-# --- HARDCODED PID ---
-$PIDToMonitor = 12345 # Replace with your actual PID
+EXIT_CODE=0 # Track overall success/failure for the script run
 
-# --- Validate PID exists ---
-try {
-    $Process = Get-Process -Id $PIDToMonitor -ErrorAction Stop
-    Write-Host "Monitoring process: [$($Process.ProcessName)] (PID: $PIDToMonitor) for $MonitoringDurationMinutes minutes..."
-} catch {
-    Write-Error "Process with PID $PIDToMonitor not found or inaccessible. Exiting."
-    exit 1
+# Function to simplify logging
+log_message() {
+    # Appends timestamp and message to the log file
+    echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"
 }
 
-# --- Initialize Log Files with Header ---
-$Header = @"
-=== TCP Connection Monitor ===
-Start Time: $(Get-Date)
-Monitoring PID: $PIDToMonitor
-Process Name: $($Process.ProcessName)
-Monitoring Interval: $MonitoringIntervalSeconds seconds
-Total Duration: $MonitoringDurationMinutes minutes
-"@
+# Ensure log directory exists (optional, depends on location)
+# log_dir=$(dirname "$LOG_FILE")
+# if [ ! -d "$log_dir" ]; then
+#    mkdir -p "$log_dir" || { echo "ERROR: Cannot create log directory $log_dir"; exit 1; }
+# fi
+# touch "$LOG_FILE" || { echo "ERROR: Cannot create log file $LOG_FILE"; exit 1; }
+# chmod 640 "$LOG_FILE" # Example permissions
 
-Add-Content -Path $OutboundLogFile -Value $Header
-Add-Content -Path $InboundLogFile -Value $Header
+# Loop through each directory specified in the TARGET_DIRS array
+for target_dir in "${TARGET_DIRS[@]}"; do
+    # Check if the target directory exists
+    if [ ! -d "$target_dir" ]; then
+        log_message "WARNING: Directory '$target_dir' not found. Skipping."
+        continue # Move to the next directory in the list
+    fi
 
-# --- Helper Functions ---
-function Get-EstablishedProcessConnections {
-    param([int]$ProcessId)
-    try {
-        Get-NetTCPConnection -State Established -ErrorAction Stop | Where-Object {$_.OwningProcess -eq $ProcessId}
-    } catch {
-        Write-Warning "Error retrieving TCP connections: $_"
-        return $null
-    }
-}
+    # Get current permissions in octal format
+    CURRENT_PERMS=$(stat -c "%a" "$target_dir")
 
-function Get-ProcessListeningPorts {
-    param([int]$ProcessId)
-    try {
-        Get-NetTCPConnection -State Listen -ErrorAction Stop | Where-Object {$_.OwningProcess -eq $ProcessId} | 
-        Select-Object -ExpandProperty LocalPort -Unique
-    } catch {
-        Write-Warning "Error retrieving listening ports: $_"
-        return @()
-    }
-}
+    # Check if current permissions match the desired permissions
+    if [ "$CURRENT_PERMS" != "$DESIRED_PERMS" ]; then
+        log_message "INFO: Permissions for '$target_dir' were '$CURRENT_PERMS'. Changing to '$DESIRED_PERMS'."
+        # Attempt to change permissions
+        if chmod "$DESIRED_PERMS" "$target_dir"; then
+            # Verify the change (optional but good practice)
+            NEW_PERMS=$(stat -c "%a" "$target_dir")
+            if [ "$NEW_PERMS" == "$DESIRED_PERMS" ]; then
+                log_message "SUCCESS: Permissions for '$target_dir' successfully changed to '$DESIRED_PERMS'."
+            else
+                log_message "ERROR: Chmod reported success for '$target_dir', but permissions are now '$NEW_PERMS' (expected '$DESIRED_PERMS')."
+                EXIT_CODE=1 # Indicate an error occurred
+            fi
+        else
+            # chmod command failed
+            log_message "ERROR: Failed to change permissions for '$target_dir' to '$DESIRED_PERMS'."
+            EXIT_CODE=1 # Indicate an error occurred
+        fi
+    else
+        # Optional: Log that permissions were already correct - uncomment if needed
+        # log_message "INFO: Permissions for '$target_dir' are already '$DESIRED_PERMS'. No action taken."
+        : # Do nothing if permissions are correct
+    fi
+done # End of directory loop
 
-function Get-HostnameFromIP {
-    param([string]$IPAddress)
-    
-    # Only mark actual localhost as local
-    if ($IPAddress -eq '127.0.0.1' -or $IPAddress -eq '::1') {
-        return "local"
-    }
-    
-    # Check cache first
-    if ($DNS_Cache.ContainsKey($IPAddress)) {
-        return $DNS_Cache[$IPAddress]
-    }
-    
-    try {
-        $result = Resolve-DnsName -Name $IPAddress -ErrorAction Stop -DnsOnly
-        $hostname = $result.NameHost
-        if ([string]::IsNullOrEmpty($hostname)) {
-            $hostname = "CANNOT_RESOLVE"
-        }
-        $DNS_Cache[$IPAddress] = $hostname
-        return $hostname
-    } catch {
-        try {
-            # Fallback to nslookup
-            $nslookup = nslookup $IPAddress 2>$null
-            if ($nslookup -match "Name:\s+(\S+)") {
-                $hostname = $matches[1]
-                $DNS_Cache[$IPAddress] = $hostname
-                return $hostname
-            }
-            $DNS_Cache[$IPAddress] = "CANNOT_RESOLVE"
-            return "CANNOT_RESOLVE"
-        } catch {
-            $DNS_Cache[$IPAddress] = "CANNOT_RESOLVE"
-            return "CANNOT_RESOLVE"
-        }
-    }
-}
-
-function Log-Data {
-    param(
-        [string]$LogFilePath,
-        [array]$Data,
-        [string]$ConnectionType
-    )
-    
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $logEntry = "[$timestamp] $ConnectionType connections check"
-    
-    if ($Data -and $Data.Count -gt 0) {
-        $logEntry += " - Found $($Data.Count) new:"
-        Add-Content -Path $LogFilePath -Value $logEntry
-        
-        $formattedEntries = foreach ($entry in $Data) {
-            $hostname = Get-HostnameFromIP -IPAddress $entry
-            "$entry - $hostname"
-        }
-        
-        Add-Content -Path $LogFilePath -Value ($formattedEntries | Sort-Object -Unique)
-    } else {
-        Add-Content -Path $LogFilePath -Value "$logEntry - No new connections found"
-    }
-}
-
-# --- Monitoring Loop ---
-try {
-    while ($IterationCount -lt $TotalIterations) {
-        $IterationCount++
-        $CurrentTime = Get-Date -Format "HH:mm:ss"
-        Write-Host "[$CurrentTime] Iteration $IterationCount of $TotalIterations..."
-
-        # --- Outbound Connections ---
-        $OutboundConnections = Get-EstablishedProcessConnections -ProcessId $PIDToMonitor
-        $NewOutboundConnections = @()
-        
-        if ($OutboundConnections) {
-            $CurrentOutboundRemoteAddresses = $OutboundConnections | 
-                Select-Object -ExpandProperty RemoteAddress | 
-                Where-Object { $_ -notlike '*::*' } |
-                Sort-Object -Unique
-            
-            foreach ($Address in $CurrentOutboundRemoteAddresses) {
-                if (-not $LoggedOutboundConnections.Contains($Address)) {
-                    $NewOutboundConnections += $Address
-                    $null = $LoggedOutboundConnections.Add($Address)
-                }
-            }
-        }
-        
-        Log-Data -LogFilePath $OutboundLogFile -Data $NewOutboundConnections -ConnectionType "Outbound"
-        Write-Host "  Outbound: $($NewOutboundConnections.Count) new addresses"
-
-        # --- Inbound Connections ---
-        $ListeningPorts = Get-ProcessListeningPorts -ProcessId $PIDToMonitor
-        $NewInboundConnections = @()
-        
-        if ($ListeningPorts) {
-            $CurrentInboundConnections = Get-NetTCPConnection -State Established | 
-                Where-Object { $ListeningPorts -contains $_.LocalPort } | 
-                Select-Object -ExpandProperty RemoteAddress |
-                Sort-Object -Unique
-            
-            foreach ($Address in $CurrentInboundConnections) {
-                if (-not $LoggedInboundConnections.Contains($Address)) {
-                    $NewInboundConnections += $Address
-                    $null = $LoggedInboundConnections.Add($Address)
-                }
-            }
-        }
-        
-        Log-Data -LogFilePath $InboundLogFile -Data $NewInboundConnections -ConnectionType "Inbound"
-        Write-Host "  Inbound: $($NewInboundConnections.Count) new endpoints"
-
-        if ($IterationCount % 6 -eq 0) {
-            Write-Host "`n----- [Progress: $($IterationCount / 6) minutes elapsed] -----`n"
-        }
-
-        Start-Sleep -Seconds $MonitoringIntervalSeconds
-    }
-} catch {
-    Write-Error "Monitoring error: $_"
-} finally {
-    # --- Final Summary ---
-    $Summary = @"
-
-=== Monitoring Summary ===
-End Time: $(Get-Date)
-Total Iterations: $IterationCount
-Unique Outbound Addresses: $($LoggedOutboundConnections.Count)
-Unique Inbound Endpoints: $($LoggedInboundConnections.Count)
-DNS Cache Size: $($DNS_Cache.Count)
-"@
-
-    Add-Content -Path $OutboundLogFile -Value $Summary
-    Add-Content -Path $InboundLogFile -Value $Summary
-
-    Write-Host "`nMonitoring complete. Logs saved to:"
-    Write-Host "  Outbound: '$OutboundLogFile'"
-    Write-Host "  Inbound: '$InboundLogFile'"
-    Write-Host "`nSummary:"
-    Write-Host "  Unique Outbound Addresses: $($LoggedOutboundConnections.Count)"
-    Write-Host "  Unique Inbound Endpoints: $($LoggedInboundConnections.Count)"
-    Write-Host "  DNS queries performed: $($DNS_Cache.Count)"
-}
+exit $EXIT_CODE
