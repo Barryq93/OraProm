@@ -1,102 +1,223 @@
 #!/bin/bash
 
-# DB2 Reorganization Script
-# This script dynamically identifies tables by size and reorganizes them
-# Large tables are processed sequentially, small tables in parallel
+# DB2 Reorganization Script with Estimation Mode
+# This script identifies tables by total size (data + index) and reorganizes them
+# Can be run in estimate-only mode or execution mode
+
+# Check command line arguments
+if [ "$#" -ne 1 ] || ([ "$1" != "estimate" ] && [ "$1" != "run" ]); then
+    echo "Usage: $0 estimate|run"
+    echo "  estimate - Only show time estimates without running reorg"
+    echo "  run      - Execute the full reorganization"
+    exit 1
+fi
+
+MODE=$1
+echo "Running in $MODE mode"
 
 # Set environment variables (adjust as needed)
 DB_NAME="your_database_name"
 DB_USER="your_db_user"
 DB_PASS="your_db_password"
 MAX_CONCURRENT_JOBS=3  # Number of concurrent reorg jobs for small tables
-LARGE_TABLE_THRESHOLD=20  # Tables larger than this (in GB) will be processed individually
-VERY_LARGE_TABLE_THRESHOLD=50  # Tables larger than this (in GB) will be processed first
+
+# Size thresholds in GB
+LARGE_TABLE_THRESHOLD=20  # Tables larger than this will be processed individually
+VERY_LARGE_THRESHOLD=50   # Tables larger than this will be processed first
 
 # Directory for logs
 LOG_DIR="/path/to/logs"
 mkdir -p $LOG_DIR
 
 # Summary log file
-SUMMARY_LOG="$LOG_DIR/reorg_summary_$(date +%Y%m%d_%H%M%S).log"
-echo "DB2 Reorganization started at $(date)" > $SUMMARY_LOG
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+SUMMARY_LOG="$LOG_DIR/reorg_summary_${MODE}_${TIMESTAMP}.log"
+echo "DB2 Reorganization $MODE started at $(date)" > $SUMMARY_LOG
+echo "Time window: 4 hours" >> $SUMMARY_LOG
 
 # Connect to the database
 db2 connect to $DB_NAME user $DB_USER using $DB_PASS
+
+# Function to estimate reorg time based on table size
+estimate_time() {
+    SIZE_GB=$1
+    # Estimated time in minutes: roughly 1 minute per GB for combined data+index
+    # Adjust these values based on your actual performance observations
+    if [ $(echo "$SIZE_GB > 50" | bc) -eq 1 ]; then
+        # Larger tables have more overhead
+        EST_MINS=$(echo "scale=0; $SIZE_GB * 1.2" | bc)
+    else
+        EST_MINS=$(echo "scale=0; $SIZE_GB" | bc)
+    fi
+    echo $EST_MINS
+}
 
 # Function to run reorg on a single table
 run_reorg() {
     TABLE_NAME=$1
     SCHEMA_NAME=$2
-    TABLE_SIZE=$3  # Size in GB
-    LOG_FILE="$LOG_DIR/reorg_${SCHEMA_NAME}_${TABLE_NAME}_$(date +%Y%m%d_%H%M%S).log"
+    TOTAL_SIZE_GB=$3
     
-    echo "Starting reorg for $SCHEMA_NAME.$TABLE_NAME (${TABLE_SIZE}GB) at $(date)" | tee -a "$LOG_FILE" $SUMMARY_LOG
+    LOG_FILE="$LOG_DIR/reorg_${SCHEMA_NAME}_${TABLE_NAME}_${TIMESTAMP}.log"
     
-    db2 "REORG TABLE $SCHEMA_NAME.$TABLE_NAME SORTKEYS LONGLOBDATA" >> "$LOG_FILE" 2>&1
-    REORG_STATUS=$?
+    # Estimate time for this table
+    EST_MINS=$(estimate_time $TOTAL_SIZE_GB)
     
-    if [ $REORG_STATUS -eq 0 ]; then
-        echo "Completed reorg for $SCHEMA_NAME.$TABLE_NAME successfully at $(date)" | tee -a "$LOG_FILE" $SUMMARY_LOG
+    if [ "$MODE" = "run" ]; then
+        START_TIME=$(date +%s)
+        echo "Starting reorg for $SCHEMA_NAME.$TABLE_NAME (${TOTAL_SIZE_GB}GB total, est. ${EST_MINS} mins) at $(date)" | tee -a "$LOG_FILE" $SUMMARY_LOG
+        
+        db2 "REORG TABLE $SCHEMA_NAME.$TABLE_NAME SORTKEYS LONGLOBDATA" >> "$LOG_FILE" 2>&1
+        REORG_STATUS=$?
+        
+        END_TIME=$(date +%s)
+        DURATION=$((END_TIME - START_TIME))
+        MINUTES=$((DURATION / 60))
+        SECONDS=$((DURATION % 60))
+        
+        if [ $REORG_STATUS -eq 0 ]; then
+            echo "Completed reorg for $SCHEMA_NAME.$TABLE_NAME successfully in ${MINUTES}m ${SECONDS}s at $(date)" | tee -a "$LOG_FILE" $SUMMARY_LOG
+        else
+            echo "ERROR: Reorg for $SCHEMA_NAME.$TABLE_NAME failed with status $REORG_STATUS after ${MINUTES}m ${SECONDS}s at $(date)" | tee -a "$LOG_FILE" $SUMMARY_LOG
+        fi
     else
-        echo "ERROR: Reorg for $SCHEMA_NAME.$TABLE_NAME failed with status $REORG_STATUS at $(date)" | tee -a "$LOG_FILE" $SUMMARY_LOG
+        echo "ESTIMATE: $SCHEMA_NAME.$TABLE_NAME (${TOTAL_SIZE_GB}GB) would take approximately ${EST_MINS} minutes" | tee -a $SUMMARY_LOG
     fi
 }
 
-# Get the list of all tables by size
-echo "Identifying tables that need reorganization by size..." | tee -a $SUMMARY_LOG
+# Get the list of all tables by total size (data + index)
+echo "Identifying tables that need reorganization by total size (data + index)..." | tee -a $SUMMARY_LOG
 
-# Get very large tables (>50GB)
-echo "Finding very large tables (>${VERY_LARGE_TABLE_THRESHOLD}GB)..." | tee -a $SUMMARY_LOG
+# Get very large tables
+echo "Finding very large tables (>${VERY_LARGE_THRESHOLD}GB)..." | tee -a $SUMMARY_LOG
 db2 -x "SELECT RTRIM(TABSCHEMA) || '.' || RTRIM(TABNAME) || '.' || 
-          CAST(CAST(DATA_OBJECT_P_SIZE AS DECIMAL(15,2))/1024/1024 AS DECIMAL(15,2)) 
+          CAST(DECIMAL(DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE) / 1024 / 1024 AS DECIMAL(10,2)) AS TOTAL_SIZE_GB 
         FROM SYSIBMADM.ADMINTABINFO 
-        WHERE DATA_OBJECT_P_SIZE > $VERY_LARGE_TABLE_THRESHOLD * 1024 * 1024
+        WHERE (DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE) > $VERY_LARGE_THRESHOLD * 1024 * 1024
         AND TABSCHEMA NOT LIKE 'SYS%'
-        ORDER BY DATA_OBJECT_P_SIZE DESC" > very_large_tables.txt
+        ORDER BY (DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE) DESC" > very_large_tables.txt
 
-# Get large tables (20-50GB)
-echo "Finding large tables (${LARGE_TABLE_THRESHOLD}-${VERY_LARGE_TABLE_THRESHOLD}GB)..." | tee -a $SUMMARY_LOG
+# Get large tables
+echo "Finding large tables (${LARGE_TABLE_THRESHOLD}-${VERY_LARGE_THRESHOLD}GB)..." | tee -a $SUMMARY_LOG
 db2 -x "SELECT RTRIM(TABSCHEMA) || '.' || RTRIM(TABNAME) || '.' || 
-          CAST(CAST(DATA_OBJECT_P_SIZE AS DECIMAL(15,2))/1024/1024 AS DECIMAL(15,2)) 
+          CAST(DECIMAL(DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE) / 1024 / 1024 AS DECIMAL(10,2)) AS TOTAL_SIZE_GB 
         FROM SYSIBMADM.ADMINTABINFO 
-        WHERE DATA_OBJECT_P_SIZE > $LARGE_TABLE_THRESHOLD * 1024 * 1024
-        AND DATA_OBJECT_P_SIZE <= $VERY_LARGE_TABLE_THRESHOLD * 1024 * 1024
+        WHERE (DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE) > $LARGE_TABLE_THRESHOLD * 1024 * 1024
+        AND (DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE) <= $VERY_LARGE_THRESHOLD * 1024 * 1024
         AND TABSCHEMA NOT LIKE 'SYS%'
-        ORDER BY DATA_OBJECT_P_SIZE DESC" > large_tables.txt
+        ORDER BY (DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE) DESC" > large_tables.txt
 
-# Get small tables (<20GB)
+# Get small tables
 echo "Finding small tables (<${LARGE_TABLE_THRESHOLD}GB)..." | tee -a $SUMMARY_LOG
 db2 -x "SELECT RTRIM(TABSCHEMA) || '.' || RTRIM(TABNAME) || '.' || 
-          CAST(CAST(DATA_OBJECT_P_SIZE AS DECIMAL(15,2))/1024/1024 AS DECIMAL(15,2)) 
+          CAST(DECIMAL(DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE) / 1024 / 1024 AS DECIMAL(10,2)) AS TOTAL_SIZE_GB 
         FROM SYSIBMADM.ADMINTABINFO 
-        WHERE DATA_OBJECT_P_SIZE <= $LARGE_TABLE_THRESHOLD * 1024 * 1024
+        WHERE (DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE) <= $LARGE_TABLE_THRESHOLD * 1024 * 1024
         AND TABSCHEMA NOT LIKE 'SYS%'
-        ORDER BY DATA_OBJECT_P_SIZE DESC" > small_tables.txt
+        ORDER BY (DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE) DESC" > small_tables.txt
+
+# Calculate total time estimate
+echo "Calculating time estimates..." | tee -a $SUMMARY_LOG
+TOTAL_EST_MINS=0
+
+# Very large tables estimate
+VERY_LARGE_COUNT=$(wc -l < very_large_tables.txt)
+echo "Very large tables count: $VERY_LARGE_COUNT" | tee -a $SUMMARY_LOG
+while read -r TABLE_INFO; do
+    SIZE_GB=$(echo $TABLE_INFO | cut -d'.' -f3)
+    TABLE_EST=$(estimate_time $SIZE_GB)
+    TOTAL_EST_MINS=$((TOTAL_EST_MINS + TABLE_EST))
+    
+    if [ "$MODE" = "estimate" ]; then
+        SCHEMA_NAME=$(echo $TABLE_INFO | cut -d'.' -f1)
+        TABLE_NAME=$(echo $TABLE_INFO | cut -d'.' -f2)
+        echo "  - $SCHEMA_NAME.$TABLE_NAME: ${SIZE_GB}GB, est. ${TABLE_EST} mins" | tee -a $SUMMARY_LOG
+    fi
+done < very_large_tables.txt
+
+# Large tables estimate
+LARGE_COUNT=$(wc -l < large_tables.txt)
+echo "Large tables count: $LARGE_COUNT" | tee -a $SUMMARY_LOG
+while read -r TABLE_INFO; do
+    SIZE_GB=$(echo $TABLE_INFO | cut -d'.' -f3)
+    TABLE_EST=$(estimate_time $SIZE_GB)
+    TOTAL_EST_MINS=$((TOTAL_EST_MINS + TABLE_EST))
+    
+    if [ "$MODE" = "estimate" ]; then
+        SCHEMA_NAME=$(echo $TABLE_INFO | cut -d'.' -f1)
+        TABLE_NAME=$(echo $TABLE_INFO | cut -d'.' -f2)
+        echo "  - $SCHEMA_NAME.$TABLE_NAME: ${SIZE_GB}GB, est. ${TABLE_EST} mins" | tee -a $SUMMARY_LOG
+    fi
+done < large_tables.txt
+
+# Small tables estimate (these will run in parallel)
+SMALL_COUNT=$(wc -l < small_tables.txt)
+echo "Small tables count: $SMALL_COUNT" | tee -a $SUMMARY_LOG
+SMALL_TOTAL_SIZE=0
+while read -r TABLE_INFO; do
+    SIZE_GB=$(echo $TABLE_INFO | cut -d'.' -f3)
+    SMALL_TOTAL_SIZE=$(echo "$SMALL_TOTAL_SIZE + $SIZE_GB" | bc)
+    
+    if [ "$MODE" = "estimate" ]; then
+        SCHEMA_NAME=$(echo $TABLE_INFO | cut -d'.' -f1)
+        TABLE_NAME=$(echo $TABLE_INFO | cut -d'.' -f2)
+        TABLE_EST=$(estimate_time $SIZE_GB)
+        echo "  - $SCHEMA_NAME.$TABLE_NAME: ${SIZE_GB}GB, est. ${TABLE_EST} mins (will run in parallel)" | tee -a $SUMMARY_LOG
+    fi
+done < small_tables.txt
+
+# Estimate small tables time (divided by concurrency)
+SMALL_EST_MINS=$(echo "scale=0; $SMALL_TOTAL_SIZE / $MAX_CONCURRENT_JOBS" | bc)
+TOTAL_EST_MINS=$((TOTAL_EST_MINS + SMALL_EST_MINS))
+
+TOTAL_EST_HRS=$(echo "scale=1; $TOTAL_EST_MINS / 60" | bc)
+echo "Total estimated time: $TOTAL_EST_MINS minutes ($TOTAL_EST_HRS hours)" | tee -a $SUMMARY_LOG
+
+if (( $(echo "$TOTAL_EST_HRS > 4" | bc -l) )); then
+    echo "WARNING: Estimated time exceeds 4-hour window!" | tee -a $SUMMARY_LOG
+fi
+
+# If just estimating, exit here
+if [ "$MODE" = "estimate" ]; then
+    echo "Estimation completed. See summary log: $SUMMARY_LOG"
+    db2 terminate
+    exit 0
+fi
+
+# If continuing with execution mode
+echo "Proceeding with actual reorganization..." | tee -a $SUMMARY_LOG
+
+# Progress tracking variables
+TABLES_DONE=0
+TOTAL_TABLES=$(( $(wc -l < very_large_tables.txt) + $(wc -l < large_tables.txt) + $(wc -l < small_tables.txt) ))
 
 # Process the very large tables first (sequentially)
-VERY_LARGE_COUNT=$(wc -l < very_large_tables.txt)
 echo "Processing $VERY_LARGE_COUNT very large tables sequentially..." | tee -a $SUMMARY_LOG
 
 while read -r TABLE_INFO; do
     SCHEMA_NAME=$(echo $TABLE_INFO | cut -d'.' -f1)
     TABLE_NAME=$(echo $TABLE_INFO | cut -d'.' -f2)
-    TABLE_SIZE=$(echo $TABLE_INFO | cut -d'.' -f3)
-    run_reorg "$TABLE_NAME" "$SCHEMA_NAME" "$TABLE_SIZE"
+    SIZE_GB=$(echo $TABLE_INFO | cut -d'.' -f3)
+    run_reorg "$TABLE_NAME" "$SCHEMA_NAME" "$SIZE_GB"
+    TABLES_DONE=$((TABLES_DONE + 1))
+    PCT_DONE=$(echo "scale=2; $TABLES_DONE * 100 / $TOTAL_TABLES" | bc)
+    echo "Progress: $TABLES_DONE/$TOTAL_TABLES tables done ($PCT_DONE%)" | tee -a $SUMMARY_LOG
 done < very_large_tables.txt
 
 # Process the large tables next (sequentially)
-LARGE_COUNT=$(wc -l < large_tables.txt)
 echo "Processing $LARGE_COUNT large tables sequentially..." | tee -a $SUMMARY_LOG
 
 while read -r TABLE_INFO; do
     SCHEMA_NAME=$(echo $TABLE_INFO | cut -d'.' -f1)
     TABLE_NAME=$(echo $TABLE_INFO | cut -d'.' -f2)
-    TABLE_SIZE=$(echo $TABLE_INFO | cut -d'.' -f3)
-    run_reorg "$TABLE_NAME" "$SCHEMA_NAME" "$TABLE_SIZE"
+    SIZE_GB=$(echo $TABLE_INFO | cut -d'.' -f3)
+    run_reorg "$TABLE_NAME" "$SCHEMA_NAME" "$SIZE_GB"
+    TABLES_DONE=$((TABLES_DONE + 1))
+    PCT_DONE=$(echo "scale=2; $TABLES_DONE * 100 / $TOTAL_TABLES" | bc)
+    echo "Progress: $TABLES_DONE/$TOTAL_TABLES tables done ($PCT_DONE%)" | tee -a $SUMMARY_LOG
 done < large_tables.txt
 
 # Process smaller tables in parallel
-SMALL_COUNT=$(wc -l < small_tables.txt)
 echo "Processing $SMALL_COUNT small tables in parallel batches..." | tee -a $SUMMARY_LOG
 
 # Process tables in batches, limited by MAX_CONCURRENT_JOBS
@@ -108,10 +229,10 @@ cat small_tables.txt | while read -r TABLE_INFO; do
     
     SCHEMA_NAME=$(echo $TABLE_INFO | cut -d'.' -f1)
     TABLE_NAME=$(echo $TABLE_INFO | cut -d'.' -f2)
-    TABLE_SIZE=$(echo $TABLE_INFO | cut -d'.' -f3)
+    SIZE_GB=$(echo $TABLE_INFO | cut -d'.' -f3)
     
     # Run the reorg job in the background
-    run_reorg "$TABLE_NAME" "$SCHEMA_NAME" "$TABLE_SIZE" &
+    run_reorg "$TABLE_NAME" "$SCHEMA_NAME" "$SIZE_GB" &
     
     # Wait a moment to prevent too many jobs starting simultaneously
     sleep 2
@@ -119,7 +240,18 @@ done
 
 # Wait for all background jobs to complete
 wait
+
+# Final summary
+TOTAL_END_TIME=$(date +%s)
+TOTAL_START_TIME=$(stat -c %Y $SUMMARY_LOG)
+TOTAL_DURATION=$((TOTAL_END_TIME - TOTAL_START_TIME))
+TOTAL_HOURS=$((TOTAL_DURATION / 3600))
+TOTAL_MINUTES=$(( (TOTAL_DURATION % 3600) / 60 ))
+TOTAL_SECONDS=$((TOTAL_DURATION % 60))
+
 echo "All reorganization jobs completed at $(date)" | tee -a $SUMMARY_LOG
+echo "Total actual time: ${TOTAL_HOURS}h ${TOTAL_MINUTES}m ${TOTAL_SECONDS}s" | tee -a $SUMMARY_LOG
+echo "Total tables processed: $TOTAL_TABLES" | tee -a $SUMMARY_LOG
 
 # Disconnect from the database
 db2 terminate
