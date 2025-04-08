@@ -1,93 +1,84 @@
 #!/bin/bash
 
 # === CONFIGURATION ===
-DB_NAME="MYDB"                          # Change this to your DB name
+DB_NAME="MYDB"
 REORGCHK_OUTPUT="/tmp/reorgchk_output.txt"
 REORG_NEEDED="/tmp/reorg_needed.txt"
 LOG_DIR="/var/log/db2_reorg_logs"
-TIMESTAMP=$(date "+%Y-%m-%d_%H-%M-%S")
-LOG_FILE="$LOG_DIR/reorgchk_$TIMESTAMP.log"
+LOG_FILE="$LOG_DIR/reorgchk_$(date "+%Y-%m-%d_%H-%M-%S").log"
+
+# === FUNCTIONS ===
+log() {
+    local timestamp=$(date "+%Y-%m-%d_%H-%M-%S")
+    echo "[$timestamp] $*" | tee -a "$LOG_FILE"
+}
 
 # === CREATE LOG DIRECTORY IF NEEDED ===
-mkdir -p "$LOG_DIR"
-
-# Start logging
-exec > >(tee -a "$LOG_FILE") 2>&1
+mkdir -p "$LOG_DIR" 2>/dev/null || { echo "Failed to create log directory"; exit 1; }
 
 # === CONNECT TO DATABASE ===
-echo "[$TIMESTAMP] Connecting to database $DB_NAME..."
-db2 connect to $DB_NAME > /dev/null
+log "Connecting to database $DB_NAME..."
+db2 connect to "$DB_NAME" >> "$LOG_FILE" 2>&1
 if [[ $? -ne 0 ]]; then
-  echo "Failed to connect to $DB_NAME"
-  exit 1
+    log "Failed to connect to $DB_NAME"
+    exit 1
 fi
 
 # === RUN REORGCHK ===
-echo "[$TIMESTAMP] Running REORGCHK..."
-db2 -x "REORGCHK CURRENT STATISTICS ON TABLE ALL" > "$REORGCHK_OUTPUT"
+log "Running REORGCHK..."
+db2 -x "REORGCHK CURRENT STATISTICS ON TABLE ALL" > "$REORGCHK_OUTPUT" 2>> "$LOG_FILE"
 
 # === PARSE OUTPUT FOR TABLE/INDEX WITH * ===
-echo "[$TIMESTAMP] Parsing REORGCHK output..."
+log "Parsing REORGCHK output..."
 awk '
 BEGIN {
-  print "Objects that may need REORG:\n"
-  capture = 0
+    print "Objects that may need REORG:\n"
+    capture = 0
 }
 /^Table:/ {
-  current = $0
-  capture = 1
-  next
+    current = $0
+    capture = 1
+    next
 }
 /^Index:/ {
-  current = $0
-  capture = 1
-  next
+    current = $0
+    capture = 1
+    next
 }
 /[*]+/ && capture == 1 {
-  print current
-  print $0
-  print ""
-  capture = 0
+    print current
+    print $0
+    print ""
+    capture = 0
 }
-' "$REORGCHK_OUTPUT" > "$REORG_NEEDED"
+' "$REORGCHK_OUTPUT" > "$REORG_NEEDED" 2>> "$LOG_FILE"
 
 # === DISPLAY REORG NEEDED ===
 if [[ -s "$REORG_NEEDED" ]]; then
-  echo -e "\n[$TIMESTAMP] Tables or indexes needing REORG found:\n"
-  cat "$REORG_NEEDED"
+    log "Tables or indexes needing REORG found:"
+    cat "$REORG_NEEDED" | tee -a "$LOG_FILE"
 else
-  echo "[$TIMESTAMP] No REORG needed for any table or index."
+    log "No REORG needed for any table or index."
 fi
 
-# === SUPPLEMENTAL SQL LOOKUP FROM SYSTEM CATALOGS ===
-echo -e "\n[$TIMESTAMP] Running supplemental SQL for detailed object info...\n"
-
+# === SUPPLEMENTAL SQL LOOKUP ===
+log "Running supplemental SQL for detailed object info:"
 while IFS= read -r line; do
-  if [[ "$line" =~ ^Table:\ ([^.]+)\.([^\ ]+) ]]; then
-    SCHEMA="${BASH_REMATCH[1]}"
-    TBLNAME="${BASH_REMATCH[2]}"
-    echo "---- Details for Table: $SCHEMA.$TBLNAME ----"
-    db2 -x "
-      SELECT 
-        TABNAME, CARD, NPAGES, FPAGES, OVERFLOW, STATSTIME
-      FROM SYSCAT.TABLES 
-      WHERE TABSCHEMA = UPPER('$SCHEMA') AND TABNAME = UPPER('$TBLNAME')
-    "
-    echo ""
-  elif [[ "$line" =~ ^Index:\ ([^.]+)\.([^\ ]+) ]]; then
-    SCHEMA="${BASH_REMATCH[1]}"
-    IDXNAME="${BASH_REMATCH[2]}"
-    echo "---- Details for Index: $SCHEMA.$IDXNAME ----"
-    db2 -x "
-      SELECT 
-        INDNAME, UNIQUERULE, COLNAMES, FULLKEYCARD, FIRSTKEYCARD, NLEAF, NLEVELS, STATSTIME
-      FROM SYSCAT.INDEXES
-      WHERE INDSCHEMA = UPPER('$SCHEMA') AND INDNAME = UPPER('$IDXNAME')
-    "
-    echo ""
-  fi
+    if [[ "$line" =~ ^Table:\ ([^.]+)\.([^\ ]+) ]]; then
+        SCHEMA="${BASH_REMATCH[1]}"
+        TBLNAME="${BASH_REMATCH[2]}"
+        log "---- Details for Table: $SCHEMA.$TBLNAME ----"
+        db2 -x "SELECT TABNAME, CARD, NPAGES, FPAGES, OVERFLOW, STATSTIME FROM SYSCAT.TABLES WHERE TABSCHEMA = UPPER('$SCHEMA') AND TABNAME = UPPER('$TBLNAME')" | tee -a "$LOG_FILE"
+        echo "" | tee -a "$LOG_FILE"
+    elif [[ "$line" =~ ^Index:\ ([^.]+)\.([^\ ]+) ]]; then
+        SCHEMA="${BASH_REMATCH[1]}"
+        IDXNAME="${BASH_REMATCH[2]}"
+        log "---- Details for Index: $SCHEMA.$IDXNAME ----"
+        db2 -x "SELECT INDNAME, UNIQUERULE, COLNAMES, FULLKEYCARD, FIRSTKEYCARD, NLEAF, NLEVELS, STATSTIME FROM SYSCAT.INDEXES WHERE INDSCHEMA = UPPER('$SCHEMA') AND INDNAME = UPPER('$IDXNAME')" | tee -a "$LOG_FILE"
+        echo "" | tee -a "$LOG_FILE"
+    fi
 done < "$REORG_NEEDED"
 
 # === DISCONNECT ===
-db2 connect reset > /dev/null
-echo "[$TIMESTAMP] Done. Log saved to: $LOG_FILE"
+db2 connect reset >> "$LOG_FILE" 2>&1
+log "Done. Log saved to: $LOG_FILE"
