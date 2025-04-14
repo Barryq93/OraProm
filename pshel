@@ -7,10 +7,12 @@ if [ -z "$1" ]; then
 fi
 
 input_file="$1"
+temp_file=$(mktemp)
 
 # Check if the input file exists
 if [ ! -f "$input_file" ]; then
   echo "Error: Input file '$input_file' not found."
+  rm -f "$temp_file"
   exit 1
 fi
 
@@ -21,10 +23,11 @@ while IFS= read -r line; do
     host="${BASH_REMATCH[1]}"
     port="${BASH_REMATCH[2]}"
 
-    # Attempt to establish a connection using openssl s_client
-    timeout 2 openssl s_client -connect "$host":"$port" </dev/null 2>&1 >/dev/null
+    # Attempt to establish a connection using openssl s_client and redirect all output to the temp file
+    timeout 2 openssl s_client -connect "$host":"$port" </dev/null >"$temp_file" 2>&1
 
-    if [ $? -eq 0 ]; then
+    # Check the content of the temp file for connection success or failure indicators
+    if grep -q "CONNECTED" "$temp_file"; then
       echo "Connected: $host:$port"
     else
       echo "Not Connected: $host:$port"
@@ -33,5 +36,8 @@ while IFS= read -r line; do
     echo "Invalid format: $line (Expected format: host:port)"
   fi
 done < "$input_file"
+
+# Clean up the temporary file
+rm -f "$temp_file"
 
 exit 0
