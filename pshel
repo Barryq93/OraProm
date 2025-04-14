@@ -14,6 +14,20 @@ if [ ! -f "$input_file" ]; then
   exit 1
 fi
 
+# Function to check TCP connection using telnet
+check_tcp_connection_telnet() {
+  local host="$1"
+  local port="$2"
+
+  if timeout 2 telnet "$host" "$port" </dev/null >/dev/null 2>&1; then
+    # Telnet connects successfully, exit status is 0
+    return 0
+  else
+    # Telnet fails to connect, exit status is non-zero
+    return 1
+  fi
+}
+
 # Read each line from the input file
 while IFS= read -r line; do
   # Use regex to extract host and port
@@ -21,18 +35,10 @@ while IFS= read -r line; do
     host="${BASH_REMATCH[1]}"
     port="${BASH_REMATCH[2]}"
 
-    url="http://${host}:${port}" # Try with http first
-
-    # Attempt to establish a connection using curl (without -s)
-    if curl --connect-timeout 2 "$url" >/dev/null 2>&1; then
-      echo "Connected: $host:$port"
+    if check_tcp_connection_telnet "$host" "$port"; then
+      echo "Connected: $host:$port (TCP - Telnet)"
     else
-      url="https://${host}:${port}" # If http fails, try https
-      if curl --connect-timeout 2 "$url" >/dev/null 2>&1; then
-        echo "Connected: $host:$port"
-      else
-        echo "Not Connected: $host:$port"
-      fi
+      echo "Not Connected: $host:$port (TCP - Telnet)"
     fi
   else
     echo "Invalid format: $line (Expected format: host:port)"
