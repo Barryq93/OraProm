@@ -34,9 +34,9 @@ while IFS= read -r line; do
     port="${BASH_REMATCH[2]}"
 
     if check_tcp_connection_curl_telnet "$host" "$port"; then
-      echo "Connected: $host:$port (TCP - curl telnet://)"
+      echo "Connected: $host:$port"
     else
-      echo "Not Connected: $host:$port (TCP - curl telnet://)"
+      echo "Not Connected: $host:$port"
     fi
   else
     echo "Invalid format: $line (Expected format: host:port)"
