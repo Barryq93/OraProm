@@ -20,20 +20,19 @@ while IFS= read -r line; do
   if [[ "$line" =~ ^([^:]+):([0-9]+)$ ]]; then
     host="${BASH_REMATCH[1]}"
     port="${BASH_REMATCH[2]}"
-    protocol="https" # Default to https
 
-    # Check if the port is 80, if so use http
-    if [ "$port" -eq 80 ]; then
-      protocol="http"
-    fi
+    url="http://${host}:${port}" # Try with http first
 
-    url="$protocol://${host}:${port}"
-
-    # Attempt to establish a connection using curl
-    if curl -s --connect-timeout 2 "$url" >/dev/null 2>&1; then
-      echo "Connected: $host:$port ($protocol)"
+    # Attempt to establish a connection using curl (without -s)
+    if curl --connect-timeout 2 "$url" >/dev/null 2>&1; then
+      echo "Connected: $host:$port"
     else
-      echo "Not Connected: $host:$port ($protocol)"
+      url="https://${host}:${port}" # If http fails, try https
+      if curl --connect-timeout 2 "$url" >/dev/null 2>&1; then
+        echo "Connected: $host:$port"
+      else
+        echo "Not Connected: $host:$port"
+      fi
     fi
   else
     echo "Invalid format: $line (Expected format: host:port)"
