@@ -14,12 +14,12 @@ if [ ! -f "$input_file" ]; then
   exit 1
 fi
 
-# Function to check TCP connection using /dev/tcp
-check_tcp_connection_bash() {
+# Function to check TCP connection using curl with telnet://
+check_tcp_connection_curl_telnet() {
   local host="$1"
   local port="$2"
 
-  if timeout 2 bash -c "cat < /dev/tcp/$host/$port > /dev/null 2>&1"; then
+  if timeout 2 curl -v --connect-timeout 2 "telnet://$host:$port" 2>&1 | grep -q "Connected to $host:$port"; then
     return 0 # Connected
   else
     return 1 # Not connected
@@ -33,10 +33,10 @@ while IFS= read -r line; do
     host="${BASH_REMATCH[1]}"
     port="${BASH_REMATCH[2]}"
 
-    if check_tcp_connection_bash "$host" "$port"; then
-      echo "Connected: $host:$port (TCP - Bash)"
+    if check_tcp_connection_curl_telnet "$host" "$port"; then
+      echo "Connected: $host:$port (TCP - curl telnet://)"
     else
-      echo "Not Connected: $host:$port (TCP - Bash)"
+      echo "Not Connected: $host:$port (TCP - curl telnet://)"
     fi
   else
     echo "Invalid format: $line (Expected format: host:port)"
