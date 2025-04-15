@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # DB2 Reorganization Script with Estimation Mode (Offline Tables, Index Reorg, Runstats, and db2rbind)
-# This script quiesces the database, performs basic offline reorgs and runstats on three tables concurrently,
-# rebinds all packages with db2rbind, and logs to a single file
+# This script quiesces the database, performs basic offline reorgs and runstats on three tables concurrently
+# in a single job format, rebinds all packages with db2rbind, and logs to a single file
 
 # Check command line arguments
 if [ "$#" -ne 1 ] || ([ "$1" != "estimate" ] && [ "$1" != "run" ]); then
@@ -59,7 +59,7 @@ estimate_time() {
     # Offline index reorg time: 0.5 min/GB (full rebuild)
     INDEX_EST_MINS=$(awk -v size="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", size * 0.5}')
     # Runstats time: 0.1 min/GB for table + indexes
-    RUNSTATS_EST_MINS=$(awk -v table="$TABLE_SIZE_GB" -v index="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", (table + index) * 0.1}')
+    RUNSTATS_EST_MINS=$(awk -v table="$TABLE_SIZE_GB" -v idx="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", (table + idx) * 0.1}')
     # Total estimate with 5% reduction for offline efficiency
     TOTAL_EST_MINS=$(awk -v table="$TABLE_EST_MINS" -v idx="$INDEX_EST_MINS" -v runstats="$RUNSTATS_EST_MINS" 'BEGIN {printf "%.0f", (table + idx + runstats) * 0.95}')
     [ "$TOTAL_EST_MINS" -lt 1 ] && TOTAL_EST_MINS=1
@@ -95,7 +95,7 @@ run_reorg() {
     TOTAL_EST_MINS=$(estimate_time "$TABLE_SIZE_GB" "$INDEX_SIZE_GB")
     TABLE_EST_MINS=$(awk -v size="$TABLE_SIZE_GB" -v thresh=50 'BEGIN {print (size > thresh) ? int(size * 1.2) : int(size)}')
     INDEX_EST_MINS=$(awk -v size="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", size * 0.5}')
-    RUNSTATS_EST_MINS=$(awk -v table="$TABLE_SIZE_GB" -v index="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", (table + index) * 0.1}')
+    RUNSTATS_EST_MINS=$(awk -v table="$TABLE_SIZE_GB" -v idx="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", (table + idx) * 0.1}')
     
     if [ "$MODE" = "run" ]; then
         START_TIME=$(date +%s)
@@ -210,8 +210,8 @@ fi
 TABLES_DONE=0
 TOTAL_TABLES=$TABLE_COUNT
 
-# Process all tables, three at a time
-echo "Processing $TABLE_COUNT tables, $CONCURRENT_JOBS concurrently..." >> $SUMMARY_LOG
+# Process all tables in a single job, three concurrently
+echo "Processing $TABLE_COUNT tables in a single job, $CONCURRENT_JOBS concurrently..." >> $SUMMARY_LOG
 while read -r TABLE_INFO; do
     ACTIVE_JOBS=$(jobs -p | wc -l)
     if [ -z "$ACTIVE_JOBS" ]; then
@@ -236,6 +236,9 @@ while read -r TABLE_INFO; do
     # Validate table and index sizes again before reorg
     if [ -z "$TABLE_SIZE_GB" ] || [ -z "$INDEX_SIZE_GB" ] || ! echo "$TABLE_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]+)?$' || ! echo "$INDEX_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
         echo "ERROR: Skipping table $SCHEMA_NAME.$TABLE_NAME due to invalid sizes (TABLE_SIZE_GB='$TABLE_SIZE_GB', INDEX_SIZE_GB='$INDEX_SIZE_GB')" >> $SUMMARY_LOG
+        TABLES_DONE=$((TABLES_DONE + 1))
+        PCT_DONE=$(awk -v done="$TABLES_DONE" -v total="$TOTAL_TABLES" 'BEGIN {printf "%.2f", done * 100 / total}')
+        echo "Progress: $TABLES_DONE/$TOTAL_TABLES tables processed ($PCT_DONE%)" >> $SUMMARY_LOG
         continue
     fi
     
@@ -288,15 +291,3 @@ echo "Total tables processed: $TOTAL_TABLES" >> $SUMMARY_LOG
 db2 terminate
 
 echo "DB2 offline reorganization, runstats, and db2rbind process completed. See log: $SUMMARY_LOG" >> $SUMMARY_LOG
-
-#!/bin/bash
-db2 connect to MYDB
-
-db2 -x "SELECT 'RUNSTATS ON TABLE ' || RTRIM(TABSCHEMA) || '.' || RTRIM(TABNAME) ||
-       ' WITH DISTRIBUTION ON ALL COLUMNS AND DETAILED INDEXES ALL ALLOW READ ACCESS;'
-FROM SYSCAT.TABLES
-WHERE TYPE = 'T'
-  AND TABSCHEMA NOT LIKE 'SYS%'
-  AND (STATS_TIME IS NULL OR STATS_TIME < CURRENT TIMESTAMP - 10 DAYS)" > runstats_all.sql
-
-db2 -tvf runstats_all.sql
