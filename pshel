@@ -40,15 +40,22 @@ echo "Time window: 4 hours" >> $SUMMARY_LOG
 estimate_time() {
     TABLE_SIZE_GB=$1  # Data size only
     INDEX_SIZE_GB=$2  # Total index size
-    # Validate sizes; default to 0.01 GB if empty or invalid
+    # Robust validation: ensure numeric and non-empty, default to 0.01
     if [ -z "$TABLE_SIZE_GB" ] || ! echo "$TABLE_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+        echo "WARNING: Invalid TABLE_SIZE_GB '$TABLE_SIZE_GB', defaulting to 0.01" >> $SUMMARY_LOG
         TABLE_SIZE_GB="0.01"
     fi
     if [ -z "$INDEX_SIZE_GB" ] || ! echo "$INDEX_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+        echo "WARNING: Invalid INDEX_SIZE_GB '$INDEX_SIZE_GB', defaulting to 0.01" >> $SUMMARY_LOG
         INDEX_SIZE_GB="0.01"
     fi
     # Base table reorg time: 1 min/GB, 1.2x for very large tables
-    if [ $(awk -v size="$TABLE_SIZE_GB" -v thresh="$VERY_LARGE_THRESHOLD" 'BEGIN {print (size > thresh) ? 1 : 0}') -eq 1 ]; then
+    COMPARE_RESULT=$(awk -v size="$TABLE_SIZE_GB" -v thresh="$VERY_LARGE_THRESHOLD" 'BEGIN {print (size > thresh) ? 1 : 0}')
+    if [ -z "$COMPARE_RESULT" ]; then
+        echo "ERROR: awk comparison failed for TABLE_SIZE_GB=$TABLE_SIZE_GB, VERY_LARGE_THRESHOLD=$VERY_LARGE_THRESHOLD" >> $SUMMARY_LOG
+        COMPARE_RESULT=0  # Default to non-large table
+    fi
+    if [ "$COMPARE_RESULT" -eq 1 ]; then
         TABLE_EST_MINS=$(awk -v size="$TABLE_SIZE_GB" 'BEGIN {printf "%.0f", size * 1.2}')
     else
         TABLE_EST_MINS=$(awk -v size="$TABLE_SIZE_GB" 'BEGIN {printf "%.0f", size}')
@@ -58,7 +65,7 @@ estimate_time() {
     # Runstats time: 0.1 min/GB for table + indexes
     RUNSTATS_EST_MINS=$(awk -v table="$TABLE_SIZE_GB" -v index="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", (table + index) * 0.1}')
     # Total estimate with 5% reduction for offline efficiency
-    TOTAL_EST_MINS=$(awk -v table="$TABLE_EST_MINS" -v index="$INDEX_EST_MINS" -v runstats="$RUNSTATS_EST_MINS" 'BEGIN {printf "%.0f", (table + index + runstats) * 0.95}')
+    TOTAL_EST_MINS=$(awk -v table="$TABLE_EST_MINS" -v idx="$INDEX_EST_MINS" -v runstats="$RUNSTATS_EST_MINS" 'BEGIN {printf "%.0f", (table + idx + runstats) * 0.95}')
     [ "$TOTAL_EST_MINS" -lt 1 ] && TOTAL_EST_MINS=1
     echo "$TOTAL_EST_MINS"
 }
@@ -322,7 +329,7 @@ TOTAL_MINUTES=$(( (TOTAL_DURATION % 3600) / 60 ))
 TOTAL_SECONDS=$((TOTAL_DURATION % 60))
 
 echo "All offline reorganization and runstats jobs completed at $(date)" | tee -a $SUMMARY_LOG
-echo "Total actual time: ${TOTAL_HOURS}h ${TOTAL_MINUTES}m ${TOTAL_SECONDS}s" | tee -a $SUMMARY_LOG
+echo "Total actual time: ${TOTAL_HOURS}h ${TOTAL_MINUTES}m ${SECONDS}s" | tee -a $SUMMARY_LOG
 echo "Total tables processed: $TOTAL_TABLES" | tee -a $SUMMARY_LOG
 
 # Disconnect from the database
