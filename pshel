@@ -257,3 +257,15 @@ echo "Total tables processed: $TOTAL_TABLES" >> $SUMMARY_LOG
 db2 terminate
 
 echo "DB2 offline reorganization, runstats, and db2rbind process completed. See log: $SUMMARY_LOG" >> $SUMMARY_LOG
+
+
+
+#!/bin/bash
+db2 connect to MYDB
+
+db2 -x "SELECT 'RUNSTATS ON TABLE ' || RTRIM(TABSCHEMA) || '.' || RTRIM(TABNAME) ||
+             ' WITH DISTRIBUTION ON ALL COLUMNS AND SAMPLED DETAILED INDEXES ALL SAMPLE 10 PERCENT ALLOW READ ACCESS;'
+        FROM SYSCAT.TABLES
+        WHERE TYPE = 'T' AND TABSCHEMA NOT LIKE 'SYS%'" > runstats_all.sql
+
+db2 -tvf runstats_all.sql
