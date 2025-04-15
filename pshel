@@ -2,7 +2,7 @@
 
 # DB2 Reorganization Script with Estimation Mode (Offline Tables, Index Reorg, Runstats, and db2rbind)
 # This script quiesces the database, performs basic offline reorgs and runstats on three tables concurrently
-# in a single job format, rebinds all packages with db2rbind, and logs to a single file
+# in a single job format with continuous concurrency, rebinds all packages with db2rbind, and logs to a single file
 
 # Check command line arguments
 if [ "$#" -ne 1 ] || ([ "$1" != "estimate" ] && [ "$1" != "run" ]); then
@@ -36,16 +36,16 @@ echo "Time window: 4 hours" >> $SUMMARY_LOG
 estimate_time() {
     TABLE_SIZE_GB=$1  # Data size only
     INDEX_SIZE_GB=$2  # Total index size
-    # Robust validation: ensure numeric and non-empty, accept small sizes
-    if [ -z "$TABLE_SIZE_GB" ] || ! echo "$TABLE_SIZE_GB" | grep -qE '^[0-9]*\.[0-9]+$'; then
+    # Robust validation: ensure numeric and non-empty, handle all sizes
+    if [ -z "$TABLE_SIZE_GB" ] || ! echo "$TABLE_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]*)?$|^0\.[0-9]+$'; then
         echo "WARNING: Invalid TABLE_SIZE_GB '$TABLE_SIZE_GB', defaulting to 0.01" >> $SUMMARY_LOG
         TABLE_SIZE_GB="0.01"
     fi
-    if [ -z "$INDEX_SIZE_GB" ] || ! echo "$INDEX_SIZE_GB" | grep -qE '^[0-9]*\.[0-9]+$'; then
+    if [ -z "$INDEX_SIZE_GB" ] || ! echo "$INDEX_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]*)?$|^0\.[0-9]+$'; then
         echo "WARNING: Invalid INDEX_SIZE_GB '$INDEX_SIZE_GB', defaulting to 0.01" >> $SUMMARY_LOG
         INDEX_SIZE_GB="0.01"
     fi
-    # Base table reorg time: 1 min/GB, 1.2x for tables > 50GB, minimum 1 min
+    # Base table reorg time: 1 min/GB, 1.2x for tables > 50GB
     COMPARE_RESULT=$(awk -v size="$TABLE_SIZE_GB" -v thresh=50 'BEGIN {print (size > thresh) ? 1 : 0}')
     if [ -z "$COMPARE_RESULT" ]; then
         echo "ERROR: awk comparison failed for TABLE_SIZE_GB=$TABLE_SIZE_GB, threshold=50" >> $SUMMARY_LOG
@@ -54,12 +54,12 @@ estimate_time() {
     if [ "$COMPARE_RESULT" -eq 1 ]; then
         TABLE_EST_MINS=$(awk -v size="$TABLE_SIZE_GB" 'BEGIN {printf "%.0f", size * 1.2}')
     else
-        TABLE_EST_MINS=$(awk -v size="$TABLE_SIZE_GB" 'BEGIN {printf "%.0f", (size < 1) ? 1 : size}')
+        TABLE_EST_MINS=$(awk -v size="$TABLE_SIZE_GB" 'BEGIN {printf "%.0f", (size < 0.01) ? 1 : size}')
     fi
-    # Offline index reorg time: 0.5 min/GB, minimum 1 min
-    INDEX_EST_MINS=$(awk -v size="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", (size < 1) ? 1 : size * 0.5}')
-    # Runstats time: 0.1 min/GB for table + indexes, minimum 1 min
-    RUNSTATS_EST_MINS=$(awk -v table="$TABLE_SIZE_GB" -v idx="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", ((table + idx) < 1) ? 1 : (table + idx) * 0.1}')
+    # Offline index reorg time: 0.5 min/GB
+    INDEX_EST_MINS=$(awk -v size="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", (size < 0.01) ? 1 : size * 0.5}')
+    # Runstats time: 0.1 min/GB for table + indexes
+    RUNSTATS_EST_MINS=$(awk -v table="$TABLE_SIZE_GB" -v idx="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", ((table + idx) < 0.01) ? 1 : (table + idx) * 0.1}')
     # Total estimate with 5% reduction for offline efficiency
     TOTAL_EST_MINS=$(awk -v table="$TABLE_EST_MINS" -v idx="$INDEX_EST_MINS" -v runstats="$RUNSTATS_EST_MINS" 'BEGIN {printf "%.0f", (table + idx + runstats) * 0.95}')
     [ "$TOTAL_EST_MINS" -lt 1 ] && TOTAL_EST_MINS=1
@@ -93,9 +93,9 @@ run_reorg() {
     INDEX_SIZE_GB=$4
     
     TOTAL_EST_MINS=$(estimate_time "$TABLE_SIZE_GB" "$INDEX_SIZE_GB")
-    TABLE_EST_MINS=$(awk -v size="$TABLE_SIZE_GB" -v thresh=50 'BEGIN {print (size > thresh) ? int(size * 1.2) : (size < 1) ? 1 : int(size)}')
-    INDEX_EST_MINS=$(awk -v size="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", (size < 1) ? 1 : size * 0.5}')
-    RUNSTATS_EST_MINS=$(awk -v table="$TABLE_SIZE_GB" -v idx="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", ((table + idx) < 1) ? 1 : (table + idx) * 0.1}')
+    TABLE_EST_MINS=$(awk -v size="$TABLE_SIZE_GB" -v thresh=50 'BEGIN {print (size > thresh) ? int(size * 1.2) : (size < 0.01) ? 1 : int(size)}')
+    INDEX_EST_MINS=$(awk -v size="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", (size < 0.01) ? 1 : size * 0.5}')
+    RUNSTATS_EST_MINS=$(awk -v table="$TABLE_SIZE_GB" -v idx="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", ((table + idx) < 0.01) ? 1 : (table + idx) * 0.1}')
     
     if [ "$MODE" = "run" ]; then
         START_TIME=$(date +%s)
@@ -161,7 +161,7 @@ while read -r TABLE_INFO; do
     INDEX_SIZE_GB=$(echo "$TABLE_INFO" | cut -d'.' -f4)
     
     # Validate table and index sizes
-    if [ -z "$TABLE_SIZE_GB" ] || [ -z "$INDEX_SIZE_GB" ] || ! echo "$TABLE_SIZE_GB" | grep -qE '^[0-9]*\.[0-9]+$' || ! echo "$INDEX_SIZE_GB" | grep -qE '^[0-9]*\.[0-9]+$'; then
+    if [ -z "$TABLE_SIZE_GB" ] || [ -z "$INDEX_SIZE_GB" ] || ! echo "$TABLE_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]*)?$|^0\.[0-9]+$' || ! echo "$INDEX_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]*)?$|^0\.[0-9]+$'; then
         echo "ERROR: Skipping table $SCHEMA_NAME.$TABLE_NAME due to invalid sizes (TABLE_SIZE_GB='$TABLE_SIZE_GB', INDEX_SIZE_GB='$INDEX_SIZE_GB')" >> $SUMMARY_LOG
         continue
     fi
@@ -210,7 +210,7 @@ fi
 TABLES_DONE=0
 TOTAL_TABLES=$TABLE_COUNT
 
-# Process all tables in a single job, three concurrently
+# Process all tables in a single job with continuous concurrency
 echo "Processing $TABLE_COUNT tables in a single job, $CONCURRENT_JOBS concurrently..." >> $SUMMARY_LOG
 while read -r TABLE_INFO; do
     ACTIVE_JOBS=$(jobs -p | wc -l)
@@ -234,7 +234,7 @@ while read -r TABLE_INFO; do
     INDEX_SIZE_GB=$(echo "$TABLE_INFO" | cut -d'.' -f4)
     
     # Validate table and index sizes again before reorg
-    if [ -z "$TABLE_SIZE_GB" ] || [ -z "$INDEX_SIZE_GB" ] || ! echo "$TABLE_SIZE_GB" | grep -qE '^[0-9]*\.[0-9]+$' || ! echo "$INDEX_SIZE_GB" | grep -qE '^[0-9]*\.[0-9]+$'; then
+    if [ -z "$TABLE_SIZE_GB" ] || [ -z "$INDEX_SIZE_GB" ] || ! echo "$TABLE_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]*)?$|^0\.[0-9]+$' || ! echo "$INDEX_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]*)?$|^0\.[0-9]+$'; then
         echo "ERROR: Skipping table $SCHEMA_NAME.$TABLE_NAME due to invalid sizes (TABLE_SIZE_GB='$TABLE_SIZE_GB', INDEX_SIZE_GB='$INDEX_SIZE_GB')" >> $SUMMARY_LOG
         TABLES_DONE=$((TABLES_DONE + 1))
         PCT_DONE=$(awk -v done="$TABLES_DONE" -v total="$TOTAL_TABLES" 'BEGIN {printf "%.2f", done * 100 / total}')
