@@ -1,14 +1,14 @@
 #!/bin/bash
 
-# DB2 Reorganization Script with Estimation Mode (Offline Tables, Index Reorg, and Runstats)
-# This script quiesces the database, performs offline reorgs and runstats, and estimates time
-# All operations are offline with full index rebuilds
+# DB2 Reorganization Script with Estimation Mode (Offline Tables, Index Reorg, Runstats, and db2rbind)
+# This script quiesces the database, performs offline reorgs and runstats on three tables concurrently,
+# rebinds all packages with db2rbind, and logs to a single file
 
 # Check command line arguments
 if [ "$#" -ne 1 ] || ([ "$1" != "estimate" ] && [ "$1" != "run" ]); then
     echo "Usage: $0 estimate|run"
-    echo "  estimate - Only show time estimates without running reorg or runstats"
-    echo "  run      - Execute the full offline reorganization and runstats"
+    echo "  estimate - Only show time estimates without running reorg, runstats, or db2rbind"
+    echo "  run      - Execute the full offline reorganization, runstats, and db2rbind"
     exit 1
 fi
 
@@ -19,24 +19,20 @@ echo "Running in $MODE mode"
 DB_NAME="your_database_name"
 DB_USER="your_db_user"
 DB_PASS="your_db_password"
-MAX_CONCURRENT_JOBS=3  # Number of concurrent reorg jobs for small tables
-
-# Size thresholds in GB
-LARGE_TABLE_THRESHOLD=20  # Tables larger than this will be processed individually
-VERY_LARGE_THRESHOLD=50   # Tables larger than this will be processed first
+CONCURRENT_JOBS=3  # Number of concurrent reorg jobs (fixed at 3)
 
 # Directory for logs
 LOG_DIR="/path/to/logs"
 mkdir -p $LOG_DIR
 
-# Summary log file
+# Single log file
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 SUMMARY_LOG="$LOG_DIR/reorg_summary_${MODE}_${TIMESTAMP}.log"
-echo "DB2 Offline Reorganization and Runstats $MODE started at $(date)" > $SUMMARY_LOG
+echo "DB2 Offline Reorganization, Runstats, and db2rbind $MODE started at $(date)" > $SUMMARY_LOG
 TOTAL_START_TIME=$(date +%s)
 echo "Time window: 4 hours" >> $SUMMARY_LOG
 
-# Function to estimate reorg and runstats time based on table and index sizes (offline)
+# Function to estimate reorg, runstats, and db2rbind time based on table and index sizes (offline)
 estimate_time() {
     TABLE_SIZE_GB=$1  # Data size only
     INDEX_SIZE_GB=$2  # Total index size
@@ -49,10 +45,10 @@ estimate_time() {
         echo "WARNING: Invalid INDEX_SIZE_GB '$INDEX_SIZE_GB', defaulting to 0.01" >> $SUMMARY_LOG
         INDEX_SIZE_GB="0.01"
     fi
-    # Base table reorg time: 1 min/GB, 1.2x for very large tables
-    COMPARE_RESULT=$(awk -v size="$TABLE_SIZE_GB" -v thresh="$VERY_LARGE_THRESHOLD" 'BEGIN {print (size > thresh) ? 1 : 0}')
+    # Base table reorg time: 1 min/GB, 1.2x for tables > 50GB
+    COMPARE_RESULT=$(awk -v size="$TABLE_SIZE_GB" -v thresh=50 'BEGIN {print (size > thresh) ? 1 : 0}')
     if [ -z "$COMPARE_RESULT" ]; then
-        echo "ERROR: awk comparison failed for TABLE_SIZE_GB=$TABLE_SIZE_GB, VERY_LARGE_THRESHOLD=$VERY_LARGE_THRESHOLD" >> $SUMMARY_LOG
+        echo "ERROR: awk comparison failed for TABLE_SIZE_GB=$TABLE_SIZE_GB, threshold=50" >> $SUMMARY_LOG
         COMPARE_RESULT=0  # Default to non-large table
     fi
     if [ "$COMPARE_RESULT" -eq 1 ]; then
@@ -73,20 +69,20 @@ estimate_time() {
 # Connect to the database
 db2 connect to $DB_NAME user $DB_USER using $DB_PASS
 if [ $? -ne 0 ]; then
-    echo "ERROR: Failed to connect to database $DB_NAME" | tee -a $SUMMARY_LOG
+    echo "ERROR: Failed to connect to database $DB_NAME" >> $SUMMARY_LOG
     exit 1
 fi
 
 # Quiesce the database in run mode
 if [ "$MODE" = "run" ]; then
-    echo "Quiescing database $DB_NAME at $(date)" | tee -a $SUMMARY_LOG
-    db2 "QUIESCE DATABASE IMMEDIATE FORCE CONNECTIONS" >> "$SUMMARY_LOG" 2>&1
+    echo "Quiescing database $DB_NAME at $(date)" >> $SUMMARY_LOG
+    db2 "QUIESCE DATABASE IMMEDIATE FORCE CONNECTIONS" >> $SUMMARY_LOG 2>&1
     if [ $? -ne 0 ]; then
-        echo "ERROR: Failed to quiesce database $DB_NAME" | tee -a $SUMMARY_LOG
+        echo "ERROR: Failed to quiesce database $DB_NAME" >> $SUMMARY_LOG
         db2 terminate
         exit 1
     fi
-    echo "Database $DB_NAME quiesced successfully" | tee -a $SUMMARY_LOG
+    echo "Database $DB_NAME quiesced successfully" >> $SUMMARY_LOG
 fi
 
 # Function to run offline reorg and runstats on a single table
@@ -96,40 +92,38 @@ run_reorg() {
     TABLE_SIZE_GB=$3
     INDEX_SIZE_GB=$4
     
-    LOG_FILE="$LOG_DIR/reorg_${SCHEMA_NAME}_${TABLE_NAME}_${TIMESTAMP}.log"
-    
     TOTAL_EST_MINS=$(estimate_time "$TABLE_SIZE_GB" "$INDEX_SIZE_GB")
-    TABLE_EST_MINS=$(awk -v size="$TABLE_SIZE_GB" -v thresh="$VERY_LARGE_THRESHOLD" 'BEGIN {print (size > thresh) ? int(size * 1.2) : int(size)}')
+    TABLE_EST_MINS=$(awk -v size="$TABLE_SIZE_GB" -v thresh=50 'BEGIN {print (size > thresh) ? int(size * 1.2) : int(size)}')
     INDEX_EST_MINS=$(awk -v size="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", size * 0.5}')
     RUNSTATS_EST_MINS=$(awk -v table="$TABLE_SIZE_GB" -v index="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", (table + index) * 0.1}')
     
     if [ "$MODE" = "run" ]; then
         START_TIME=$(date +%s)
-        echo "Starting offline table reorg for $SCHEMA_NAME.$TABLE_NAME (Table: ${TABLE_SIZE_GB}GB, Indexes: ${INDEX_SIZE_GB}GB, est. ${TOTAL_EST_MINS} mins) at $(date)" | tee -a "$LOG_FILE" $SUMMARY_LOG
+        echo "Starting offline table reorg for $SCHEMA_NAME.$TABLE_NAME (Table: ${TABLE_SIZE_GB}GB, Indexes: ${INDEX_SIZE_GB}GB, est. ${TOTAL_EST_MINS} mins) at $(date)" >> $SUMMARY_LOG
         
-        db2 "REORG TABLE $SCHEMA_NAME.$TABLE_NAME SORTKEYS LONGLOBDATA" >> "$LOG_FILE" 2>&1
+        db2 "REORG TABLE $SCHEMA_NAME.$TABLE_NAME SORTKEYS LONGLOBDATA" >> $SUMMARY_LOG 2>&1
         TABLE_REORG_STATUS=$?
         
         if [ $TABLE_REORG_STATUS -eq 0 ]; then
-            echo "Offline table reorg for $SCHEMA_NAME.$TABLE_NAME completed successfully at $(date)" | tee -a "$LOG_FILE" $SUMMARY_LOG
+            echo "Offline table reorg for $SCHEMA_NAME.$TABLE_NAME completed successfully at $(date)" >> $SUMMARY_LOG
         else
-            echo "ERROR: Offline table reorg for $SCHEMA_NAME.$TABLE_NAME failed with status $TABLE_REORG_STATUS at $(date)" | tee -a "$LOG_FILE" $SUMMARY_LOG
+            echo "ERROR: Offline table reorg for $SCHEMA_NAME.$TABLE_NAME failed with status $TABLE_REORG_STATUS at $(date)" >> $SUMMARY_LOG
             return
         fi
         
-        echo "Starting offline index reorg for $SCHEMA_NAME.$TABLE_NAME at $(date)" | tee -a "$LOG_FILE" $SUMMARY_LOG
-        db2 "REORG INDEXES ALL FOR TABLE $SCHEMA_NAME.$TABLE_NAME" >> "$LOG_FILE" 2>&1
+        echo "Starting offline index reorg for $SCHEMA_NAME.$TABLE_NAME at $(date)" >> $SUMMARY_LOG
+        db2 "REORG INDEXES ALL FOR TABLE $SCHEMA_NAME.$TABLE_NAME" >> $SUMMARY_LOG 2>&1
         INDEX_REORG_STATUS=$?
         
         if [ $INDEX_REORG_STATUS -eq 0 ]; then
-            echo "Offline index reorg for $SCHEMA_NAME.$TABLE_NAME completed successfully at $(date)" | tee -a "$LOG_FILE" $SUMMARY_LOG
+            echo "Offline index reorg for $SCHEMA_NAME.$TABLE_NAME completed successfully at $(date)" >> $SUMMARY_LOG
         else
-            echo "ERROR: Offline index reorg for $SCHEMA_NAME.$TABLE_NAME failed with status $INDEX_REORG_STATUS at $(date)" | tee -a "$LOG_FILE" $SUMMARY_LOG
+            echo "ERROR: Offline index reorg for $SCHEMA_NAME.$TABLE_NAME failed with status $INDEX_REORG_STATUS at $(date)" >> $SUMMARY_LOG
             return
         fi
         
-        echo "Starting runstats for $SCHEMA_NAME.$TABLE_NAME at $(date)" | tee -a "$LOG_FILE" $SUMMARY_LOG
-        db2 "RUNSTATS ON TABLE $SCHEMA_NAME.$TABLE_NAME WITH DISTRIBUTION AND DETAILED INDEXES ALL" >> "$LOG_FILE" 2>&1
+        echo "Starting runstats for $SCHEMA_NAME.$TABLE_NAME at $(date)" >> $SUMMARY_LOG
+        db2 "RUNSTATS ON TABLE $SCHEMA_NAME.$TABLE_NAME WITH DISTRIBUTION AND DETAILED INDEXES ALL" >> $SUMMARY_LOG 2>&1
         RUNSTATS_STATUS=$?
         
         END_TIME=$(date +%s)
@@ -138,56 +132,30 @@ run_reorg() {
         SECONDS=$((DURATION % 60))
         
         if [ $RUNSTATS_STATUS -eq 0 ]; then
-            echo "Completed offline table reorg, index reorg, and runstats for $SCHEMA_NAME.$TABLE_NAME successfully in ${MINUTES}m ${SECONDS}s at $(date)" | tee -a "$LOG_FILE" $SUMMARY_LOG
+            echo "Completed offline table reorg, index reorg, and runstats for $SCHEMA_NAME.$TABLE_NAME successfully in ${MINUTES}m ${SECONDS}s at $(date)" >> $SUMMARY_LOG
         else
-            echo "ERROR: Runstats for $SCHEMA_NAME.$TABLE_NAME failed with status $RUNSTATS_STATUS after ${MINUTES}m ${SECONDS}s at $(date)" | tee -a "$LOG_FILE" $SUMMARY_LOG
+            echo "ERROR: Runstats for $SCHEMA_NAME.$TABLE_NAME failed with status $RUNSTATS_STATUS after ${MINUTES}m ${SECONDS}s at $(date)" >> $SUMMARY_LOG
         fi
     else
-        echo "ESTIMATE: $SCHEMA_NAME.$TABLE_NAME (Table: ${TABLE_SIZE_GB}GB, est. ${TABLE_EST_MINS} mins; Indexes (offline): ${INDEX_SIZE_GB}GB, est. ${INDEX_EST_MINS} mins; Runstats: est. ${RUNSTATS_EST_MINS} mins; Total: ${TOTAL_EST_MINS} mins)" | tee -a $SUMMARY_LOG
+        echo "ESTIMATE: $SCHEMA_NAME.$TABLE_NAME (Table: ${TABLE_SIZE_GB}GB, est. ${TABLE_EST_MINS} mins; Indexes (offline): ${INDEX_SIZE_GB}GB, est. ${INDEX_EST_MINS} mins; Runstats: est. ${RUNSTATS_EST_MINS} mins; Total: ${TOTAL_EST_MINS} mins)" >> $SUMMARY_LOG
     fi
 }
 
 # Get the list of all tables and indexes by size
-echo "Identifying tables and indexes that need reorganization by size..." | tee -a $SUMMARY_LOG
-
-# Get very large tables
-echo "Finding very large tables (>${VERY_LARGE_THRESHOLD}GB)..." | tee -a $SUMMARY_LOG
+echo "Identifying tables and indexes that need reorganization by size..." >> $SUMMARY_LOG
 db2 -x "SELECT RTRIM(TABSCHEMA) || '.' || RTRIM(TABNAME) || '.' || 
           CAST(DECIMAL(DATA_OBJECT_P_SIZE) / 1024 / 1024 AS DECIMAL(10,2)) || '.' || 
           CAST(DECIMAL(INDEX_OBJECT_P_SIZE) / 1024 / 1024 AS DECIMAL(10,2)) 
         FROM SYSIBMADM.ADMINTABINFO 
-        WHERE (DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE) > $VERY_LARGE_THRESHOLD * 1024 * 1024
-        AND TABSCHEMA NOT LIKE 'SYS%'
-        ORDER BY (DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE) DESC" > very_large_tables.txt
-
-# Get large tables
-echo "Finding large tables (${LARGE_TABLE_THRESHOLD}-${VERY_LARGE_THRESHOLD}GB)..." | tee -a $SUMMARY_LOG
-db2 -x "SELECT RTRIM(TABSCHEMA) || '.' || RTRIM(TABNAME) || '.' || 
-          CAST(DECIMAL(DATA_OBJECT_P_SIZE) / 1024 / 1024 AS DECIMAL(10,2)) || '.' || 
-          CAST(DECIMAL(INDEX_OBJECT_P_SIZE) / 1024 / 1024 AS DECIMAL(10,2)) 
-        FROM SYSIBMADM.ADMINTABINFO 
-        WHERE (DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE) > $LARGE_TABLE_THRESHOLD * 1024 * 1024
-        AND (DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE) <= $VERY_LARGE_THRESHOLD * 1024 * 1024
-        AND TABSCHEMA NOT LIKE 'SYS%'
-        ORDER BY (DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE) DESC" > large_tables.txt
-
-# Get small tables
-echo "Finding small tables (<${LARGE_TABLE_THRESHOLD}GB)..." | tee -a $SUMMARY_LOG
-db2 -x "SELECT RTRIM(TABSCHEMA) || '.' || RTRIM(TABNAME) || '.' || 
-          CAST(DECIMAL(DATA_OBJECT_P_SIZE) / 1024 / 1024 AS DECIMAL(10,2)) || '.' || 
-          CAST(DECIMAL(INDEX_OBJECT_P_SIZE) / 1024 / 1024 AS DECIMAL(10,2)) 
-        FROM SYSIBMADM.ADMINTABINFO 
-        WHERE (DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE) <= $LARGE_TABLE_THRESHOLD * 1024 * 1024
-        AND TABSCHEMA NOT LIKE 'SYS%'
-        ORDER BY (DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE) DESC" > small_tables.txt
+        WHERE TABSCHEMA NOT LIKE 'SYS%'
+        ORDER BY (DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE) DESC" > all_tables.txt
 
 # Calculate total time estimate
-echo "Calculating time estimates..." | tee -a $SUMMARY_LOG
+echo "Calculating time estimates..." >> $SUMMARY_LOG
 TOTAL_EST_MINS=0
+TABLE_COUNT=$(wc -l < all_tables.txt)
+echo "Total tables to process: $TABLE_COUNT" >> $SUMMARY_LOG
 
-# Very large tables estimate
-VERY_LARGE_COUNT=$(wc -l < very_large_tables.txt)
-echo "Very large tables count: $VERY_LARGE_COUNT" | tee -a $SUMMARY_LOG
 while read -r TABLE_INFO; do
     SCHEMA_NAME=$(echo "$TABLE_INFO" | cut -d'.' -f1)
     TABLE_NAME=$(echo "$TABLE_INFO" | cut -d'.' -f2)
@@ -199,101 +167,39 @@ while read -r TABLE_INFO; do
     if [ "$MODE" = "estimate" ]; then
         run_reorg "$TABLE_NAME" "$SCHEMA_NAME" "$TABLE_SIZE_GB" "$INDEX_SIZE_GB"
     fi
-done < very_large_tables.txt
+done < all_tables.txt
 
-# Large tables estimate
-LARGE_COUNT=$(wc -l < large_tables.txt)
-echo "Large tables count: $LARGE_COUNT" | tee -a $SUMMARY_LOG
-while read -r TABLE_INFO; do
-    SCHEMA_NAME=$(echo "$TABLE_INFO" | cut -d'.' -f1)
-    TABLE_NAME=$(echo "$TABLE_INFO" | cut -d'.' -f2)
-    TABLE_SIZE_GB=$(echo "$TABLE_INFO" | cut -d'.' -f3)
-    INDEX_SIZE_GB=$(echo "$TABLE_INFO" | cut -d'.' -f4)
-    TABLE_EST=$(estimate_time "$TABLE_SIZE_GB" "$INDEX_SIZE_GB")
-    TOTAL_EST_MINS=$((TOTAL_EST_MINS + TABLE_EST))
-    
-    if [ "$MODE" = "estimate" ]; then
-        run_reorg "$TABLE_NAME" "$SCHEMA_NAME" "$TABLE_SIZE_GB" "$INDEX_SIZE_GB"
-    fi
-done < large_tables.txt
-
-# Small tables estimate (these will run in parallel)
-SMALL_COUNT=$(wc -l < small_tables.txt)
-echo "Small tables count: $SMALL_COUNT" | tee -a $SUMMARY_LOG
-SMALL_TOTAL_SIZE=0
-SMALL_INDEX_SIZE=0
-while read -r TABLE_INFO; do
-    SCHEMA_NAME=$(echo "$TABLE_INFO" | cut -d'.' -f1)
-    TABLE_NAME=$(echo "$TABLE_INFO" | cut -d'.' -f2)
-    TABLE_SIZE_GB=$(echo "$TABLE_INFO" | cut -d'.' -f3)
-    INDEX_SIZE_GB=$(echo "$TABLE_INFO" | cut -d'.' -f4)
-    SMALL_TOTAL_SIZE=$(awk -v total="$SMALL_TOTAL_SIZE" -v size="$TABLE_SIZE_GB" 'BEGIN {printf "%.2f", total + size}')
-    SMALL_INDEX_SIZE=$(awk -v total="$SMALL_INDEX_SIZE" -v size="$INDEX_SIZE_GB" 'BEGIN {printf "%.2f", total + size}')
-    
-    if [ "$MODE" = "estimate" ]; then
-        run_reorg "$TABLE_NAME" "$SCHEMA_NAME" "$TABLE_SIZE_GB" "$INDEX_SIZE_GB"
-    fi
-done < small_tables.txt
-
-# Estimate small tables time (divided by concurrency)
-SMALL_TABLE_EST=$(awk -v size="$SMALL_TOTAL_SIZE" 'BEGIN {printf "%.0f", size}')
-SMALL_INDEX_EST=$(awk -v size="$SMALL_INDEX_SIZE" 'BEGIN {printf "%.0f", size * 0.5}')
-SMALL_RUNSTATS_EST=$(awk -v table="$SMALL_TOTAL_SIZE" -v index="$SMALL_INDEX_SIZE" 'BEGIN {printf "%.0f", (table + index) * 0.1}')
-SMALL_EST_MINS=$((SMALL_TABLE_EST + SMALL_INDEX_EST + SMALL_RUNSTATS_EST))
-SMALL_EST_MINS=$(awk -v est="$SMALL_EST_MINS" -v jobs="$MAX_CONCURRENT_JOBS" 'BEGIN {printf "%.0f", est / jobs}')
-TOTAL_EST_MINS=$((TOTAL_EST_MINS + SMALL_EST_MINS))
+# Adjust total estimate for concurrency (divide by 3 for three parallel jobs)
+TOTAL_EST_MINS=$(awk -v total="$TOTAL_EST_MINS" -v jobs="$CONCURRENT_JOBS" 'BEGIN {printf "%.0f", total / jobs}')
+# Add fixed estimate for db2rbind
+DB2RBIND_EST_MINS=5
+TOTAL_EST_MINS=$((TOTAL_EST_MINS + DB2RBIND_EST_MINS))
 
 TOTAL_EST_HRS=$(awk -v mins="$TOTAL_EST_MINS" 'BEGIN {printf "%.1f", mins / 60}')
-echo "Total estimated time: $TOTAL_EST_MINS minutes ($TOTAL_EST_HRS hours)" | tee -a $SUMMARY_LOG
+echo "Total estimated time (including db2rbind): $TOTAL_EST_MINS minutes ($TOTAL_EST_HRS hours)" >> $SUMMARY_LOG
 
 if [ $(awk -v hrs="$TOTAL_EST_HRS" 'BEGIN {print (hrs > 4) ? 1 : 0}') -eq 1 ]; then
-    echo "WARNING: Estimated time exceeds 4-hour window!" | tee -a $SUMMARY_LOG
+    echo "WARNING: Estimated time exceeds 4-hour window!" >> $SUMMARY_LOG
 fi
 
 # If just estimating, exit here
 if [ "$MODE" = "estimate" ]; then
-    echo "Estimation completed. See summary log: $SUMMARY_LOG"
+    echo "Estimation completed. See log: $SUMMARY_LOG"
     db2 terminate
     exit 0
 fi
 
 # If continuing with execution mode
-echo "Proceeding with actual offline reorganization and runstats..." | tee -a $SUMMARY_LOG
+echo "Proceeding with actual offline reorganization, runstats, and db2rbind..." >> $SUMMARY_LOG
 
 # Progress tracking variables
 TABLES_DONE=0
-TOTAL_TABLES=$(( $(wc -l < very_large_tables.txt) + $(wc -l < large_tables.txt) + $(wc -l < small_tables.txt) ))
+TOTAL_TABLES=$TABLE_COUNT
 
-# Process the very large tables first (sequentially)
-echo "Processing $VERY_LARGE_COUNT very large tables sequentially..." | tee -a $SUMMARY_LOG
-while read -r TABLE_INFO; do
-    SCHEMA_NAME=$(echo "$TABLE_INFO" | cut -d'.' -f1)
-    TABLE_NAME=$(echo "$TABLE_INFO" | cut -d'.' -f2)
-    TABLE_SIZE_GB=$(echo "$TABLE_INFO" | cut -d'.' -f3)
-    INDEX_SIZE_GB=$(echo "$TABLE_INFO" | cut -d'.' -f4)
-    run_reorg "$TABLE_NAME" "$SCHEMA_NAME" "$TABLE_SIZE_GB" "$INDEX_SIZE_GB"
-    TABLES_DONE=$((TABLES_DONE + 1))
-    PCT_DONE=$(awk -v done="$TABLES_DONE" -v total="$TOTAL_TABLES" 'BEGIN {printf "%.2f", done * 100 / total}')
-    echo "Progress: $TABLES_DONE/$TOTAL_TABLES tables done ($PCT_DONE%)" | tee -a $SUMMARY_LOG
-done < very_large_tables.txt
-
-# Process the large tables next (sequentially)
-echo "Processing $LARGE_COUNT large tables sequentially..." | tee -a $SUMMARY_LOG
-while read -r TABLE_INFO; do
-    SCHEMA_NAME=$(echo "$TABLE_INFO" | cut -d'.' -f1)
-    TABLE_NAME=$(echo "$TABLE_INFO" | cut -d'.' -f2)
-    TABLE_SIZE_GB=$(echo "$TABLE_INFO" | cut -d'.' -f3)
-    INDEX_SIZE_GB=$(echo "$TABLE_INFO" | cut -d'.' -f4)
-    run_reorg "$TABLE_NAME" "$SCHEMA_NAME" "$TABLE_SIZE_GB" "$INDEX_SIZE_GB"
-    TABLES_DONE=$((TABLES_DONE + 1))
-    PCT_DONE=$(awk -v done="$TABLES_DONE" -v total="$TOTAL_TABLES" 'BEGIN {printf "%.2f", done * 100 / total}')
-    echo "Progress: $TABLES_DONE/$TOTAL_TABLES tables done ($PCT_DONE%)" | tee -a $SUMMARY_LOG
-done < large_tables.txt
-
-# Process smaller tables in parallel
-echo "Processing $SMALL_COUNT small tables in parallel batches..." | tee -a $SUMMARY_LOG
-cat small_tables.txt | while read -r TABLE_INFO; do
-    while [ $(jobs -p | wc -l) -ge $MAX_CONCURRENT_JOBS ]; do
+# Process all tables, three at a time
+echo "Processing $TABLE_COUNT tables, three concurrently..." >> $SUMMARY_LOG
+cat all_tables.txt | while read -r TABLE_INFO; do
+    while [ $(jobs -p | wc -l) -ge $CONCURRENT_JOBS ]; do
         sleep 5
     done
     
@@ -305,19 +211,34 @@ cat small_tables.txt | while read -r TABLE_INFO; do
     run_reorg "$TABLE_NAME" "$SCHEMA_NAME" "$TABLE_SIZE_GB" "$INDEX_SIZE_GB" &
     
     sleep 2
+    
+    TABLES_DONE=$((TABLES_DONE + 1))
+    PCT_DONE=$(awk -v done="$TABLES_DONE" -v total="$TOTAL_TABLES" 'BEGIN {printf "%.2f", done * 100 / total}')
+    echo "Progress: $TABLES_DONE/$TOTAL_TABLES tables started ($PCT_DONE%)" >> $SUMMARY_LOG
 done
 
 # Wait for all background jobs to complete
 wait
 
+# Perform db2rbind
+if [ "$MODE" = "run" ]; then
+    echo "Starting db2rbind for all packages at $(date)" >> $SUMMARY_LOG
+    db2rbind $DB_NAME -u $DB_USER -p $DB_PASS >> $SUMMARY_LOG 2>&1
+    if [ $? -eq 0 ]; then
+        echo "db2rbind completed successfully at $(date)" >> $SUMMARY_LOG
+    else
+        echo "ERROR: db2rbind failed at $(date)" >> $SUMMARY_LOG
+    fi
+fi
+
 # Unquiesce the database in run mode
 if [ "$MODE" = "run" ]; then
-    echo "Unquiescing database $DB_NAME at $(date)" | tee -a $SUMMARY_LOG
-    db2 "UNQUIESCE DATABASE" >> "$SUMMARY_LOG" 2>&1
-    if [ $? -ne 0 ]; then
-        echo "ERROR: Failed to unquiesce database $DB_NAME" | tee -a $SUMMARY_LOG
+    echo "Unquiescing database $DB_NAME at $(date)" >> $SUMMARY_LOG
+    db2 "UNQUIESCE DATABASE" >> $SUMMARY_LOG 2>&1
+    if [ $? -eq 0 ]; then
+        echo "Database $DB_NAME unquiesced successfully" >> $SUMMARY_LOG
     else
-        echo "Database $DB_NAME unquiesced successfully" | tee -a $SUMMARY_LOG
+        echo "ERROR: Failed to unquiesce database $DB_NAME" >> $SUMMARY_LOG
     fi
 fi
 
@@ -328,11 +249,11 @@ TOTAL_HOURS=$((TOTAL_DURATION / 3600))
 TOTAL_MINUTES=$(( (TOTAL_DURATION % 3600) / 60 ))
 TOTAL_SECONDS=$((TOTAL_DURATION % 60))
 
-echo "All offline reorganization and runstats jobs completed at $(date)" | tee -a $SUMMARY_LOG
-echo "Total actual time: ${TOTAL_HOURS}h ${TOTAL_MINUTES}m ${SECONDS}s" | tee -a $SUMMARY_LOG
-echo "Total tables processed: $TOTAL_TABLES" | tee -a $SUMMARY_LOG
+echo "All offline reorganization, runstats, and db2rbind jobs completed at $(date)" >> $SUMMARY_LOG
+echo "Total actual time: ${TOTAL_HOURS}h ${TOTAL_MINUTES}m ${TOTAL_SECONDS}s" >> $SUMMARY_LOG
+echo "Total tables processed: $TOTAL_TABLES" >> $SUMMARY_LOG
 
 # Disconnect from the database
 db2 terminate
 
-echo "DB2 offline reorganization and runstats process completed. See summary log: $SUMMARY_LOG" | tee -a $SUMMARY_LOG
+echo "DB2 offline reorganization, runstats, and db2rbind process completed. See log: $SUMMARY_LOG" >> $SUMMARY_LOG
