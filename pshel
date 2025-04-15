@@ -192,15 +192,32 @@ fi
 # If continuing with execution mode
 echo "Proceeding with actual offline reorganization, runstats, and db2rbind..." >> $SUMMARY_LOG
 
+# Validate CONCURRENT_JOBS
+if [ -z "$CONCURRENT_JOBS" ] || ! echo "$CONCURRENT_JOBS" | grep -qE '^[0-9]+$'; then
+    echo "ERROR: CONCURRENT_JOBS is unset or invalid ('$CONCURRENT_JOBS'), defaulting to 3" >> $SUMMARY_LOG
+    CONCURRENT_JOBS=3
+fi
+
 # Progress tracking variables
 TABLES_DONE=0
 TOTAL_TABLES=$TABLE_COUNT
 
 # Process all tables, three at a time
-echo "Processing $TABLE_COUNT tables, three concurrently..." >> $SUMMARY_LOG
-cat all_tables.txt | while read -r TABLE_INFO; do
-    while [ $(jobs -p | wc -l) -ge $CONCURRENT_JOBS ]; do
+echo "Processing $TABLE_COUNT tables, $CONCURRENT_JOBS concurrently..." >> $SUMMARY_LOG
+while read -r TABLE_INFO; do
+    ACTIVE_JOBS=$(jobs -p | wc -l)
+    if [ -z "$ACTIVE_JOBS" ]; then
+        echo "WARNING: jobs -p | wc -l returned empty, defaulting to 0" >> $SUMMARY_LOG
+        ACTIVE_JOBS=0
+    fi
+    while [ "$ACTIVE_JOBS" -ge "$CONCURRENT_JOBS" ]; do
+        echo "Waiting for active jobs ($ACTIVE_JOBS/$CONCURRENT_JOBS) to complete..." >> $SUMMARY_LOG
         sleep 5
+        ACTIVE_JOBS=$(jobs -p | wc -l)
+        if [ -z "$ACTIVE_JOBS" ]; then
+            echo "WARNING: jobs -p | wc -l returned empty, defaulting to 0" >> $SUMMARY_LOG
+            ACTIVE_JOBS=0
+        fi
     done
     
     SCHEMA_NAME=$(echo "$TABLE_INFO" | cut -d'.' -f1)
@@ -215,7 +232,7 @@ cat all_tables.txt | while read -r TABLE_INFO; do
     TABLES_DONE=$((TABLES_DONE + 1))
     PCT_DONE=$(awk -v done="$TABLES_DONE" -v total="$TOTAL_TABLES" 'BEGIN {printf "%.2f", done * 100 / total}')
     echo "Progress: $TABLES_DONE/$TOTAL_TABLES tables started ($PCT_DONE%)" >> $SUMMARY_LOG
-done
+done < all_tables.txt
 
 # Wait for all background jobs to complete
 wait
