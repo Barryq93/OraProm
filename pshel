@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # DB2 Reorganization Script with Estimation Mode (Offline Tables, Index Reorg, Runstats, and db2rbind)
-# CORRECTED VERSION: Handles connections within background jobs.
+# IMPROVED VERSION: Single connection per job, reduced logging verbosity, better reliability
 # This script quiesces the database, performs basic offline reorgs and runstats on tables concurrently
 # in a single job format with continuous concurrency, rebinds all packages with db2rbind, and logs to a single file
 
@@ -22,7 +22,7 @@ DB_NAME="your_database_name" # <--- CHANGE THIS
 DB_USER="your_db_user"       # <--- CHANGE THIS
 # WARNING: Storing passwords in scripts is insecure. Use safer methods for production.
 DB_PASS="your_db_password"   # <--- CHANGE THIS
-CONCURRENT_JOBS=3  # Number of concurrent reorg jobs (fixed at 3 in this version)
+CONCURRENT_JOBS=3  # Number of concurrent reorg jobs
 
 # Directory for logs
 LOG_DIR="/path/to/logs" # <--- CHANGE THIS
@@ -52,8 +52,6 @@ estimate_time() {
     if [ -z "$INDEX_SIZE_GB" ] || ! echo "$INDEX_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
         echo "WARNING: Invalid INDEX_SIZE_GB '$INDEX_SIZE_GB', defaulting to 0.01" >> $SUMMARY_LOG
         INDEX_SIZE_GB="0.01"
-    else
-        INDEX_SIZE_GB=$(awk -v size="$INDEX_SIZE_GB" 'BEGIN {printf "%.2f", size + 0}')
     fi
 
     # Base table reorg time: 1 min/GB, 1.2x for tables > 50GB
@@ -69,102 +67,114 @@ estimate_time() {
     RUNSTATS_EST_MINS=$(awk -v table="$TABLE_SIZE_GB" -v idx="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", ((table + idx) < 0.01) ? 1 : (table + idx) * 0.1}')
     # Total estimate with 5% reduction for offline efficiency
     TOTAL_EST_MINS=$(awk -v table="$TABLE_EST_MINS" -v idx="$INDEX_EST_MINS" -v runstats="$RUNSTATS_EST_MINS" 'BEGIN {printf "%.0f", (table + idx + runstats) * 0.95}')
+    # Ensure minimum of 1 minute as estimate
     [ "$TOTAL_EST_MINS" -lt 1 ] && TOTAL_EST_MINS=1
     echo "$TOTAL_EST_MINS"
 }
 
-# Function to run offline reorg and runstats on a single table
-# *** This function now handles its own connection ***
-run_reorg() {
-    TABLE_NAME=$1
-    SCHEMA_NAME=$2
-    TABLE_SIZE_GB=$3
-    INDEX_SIZE_GB=$4
-
-    # --- Establish connection for this specific job ---
-    echo "Connecting to $DB_NAME for $SCHEMA_NAME.$TABLE_NAME..." >> $SUMMARY_LOG
-    db2 connect to "$DB_NAME" user "$DB_USER" using "$DB_PASS" >> $SUMMARY_LOG 2>&1
-    CONN_STATUS=$?
-    if [ $CONN_STATUS -ne 0 ]; then
-        echo "ERROR: Failed to connect to database $DB_NAME within run_reorg for $SCHEMA_NAME.$TABLE_NAME (Status: $CONN_STATUS)" >> $SUMMARY_LOG
-        # Exit this specific background job if connection fails
-        exit 1
+# Function to process a batch of tables in a single connection job
+process_table_batch() {
+    # The tables to process are received as parameters
+    # Syntax: process_table_batch "TABLE1 SCHEMA1 SIZE1_GB INDEX1_GB" "TABLE2 SCHEMA2 SIZE2_GB INDEX2_GB" ...
+    
+    if [ $# -eq 0 ]; then
+        echo "No tables provided to process_table_batch" >> $SUMMARY_LOG
+        return 0
     fi
-    echo "Connection successful for $SCHEMA_NAME.$TABLE_NAME." >> $SUMMARY_LOG
-
-    # Calculate estimates (also used for logging)
-    TOTAL_EST_MINS=$(estimate_time "$TABLE_SIZE_GB" "$INDEX_SIZE_GB")
-    TABLE_EST_MINS=$(awk -v size="$TABLE_SIZE_GB" -v thresh=50 'BEGIN {print (size > thresh) ? int(size * 1.2) : (size < 0.01) ? 1 : int(size)}')
-    INDEX_EST_MINS=$(awk -v size="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", (size < 0.01) ? 1 : size * 0.5}')
-    RUNSTATS_EST_MINS=$(awk -v table="$TABLE_SIZE_GB" -v idx="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", ((table + idx) < 0.01) ? 1 : (table + idx) * 0.1}')
-
-    if [ "$MODE" = "run" ]; then
-        START_TIME=$(date +%s)
-        echo "Starting offline table reorg for $SCHEMA_NAME.$TABLE_NAME (Table: ${TABLE_SIZE_GB}GB, Indexes: ${INDEX_SIZE_GB}GB, est. ${TOTAL_EST_MINS} mins) at $(date)" >> $SUMMARY_LOG
-
-        echo "Running: db2 REORG TABLE \"$SCHEMA_NAME\".\"$TABLE_NAME\"" >> $SUMMARY_LOG
-        db2 "REORG TABLE \"$SCHEMA_NAME\".\"$TABLE_NAME\"" >> $SUMMARY_LOG 2>&1
-        TABLE_REORG_STATUS=$?
-
-        if [ $TABLE_REORG_STATUS -eq 0 ]; then
-            echo "Offline table reorg for $SCHEMA_NAME.$TABLE_NAME completed successfully at $(date)" >> $SUMMARY_LOG
-        else
-            echo "ERROR: Offline table reorg for $SCHEMA_NAME.$TABLE_NAME failed with status $TABLE_REORG_STATUS at $(date)" >> $SUMMARY_LOG
-            db2 terminate >> $SUMMARY_LOG 2>&1 # Terminate connection on error
-            return 1 # Indicate failure from the function
-        fi
-
-        echo "Starting offline index reorg for $SCHEMA_NAME.$TABLE_NAME at $(date)" >> $SUMMARY_LOG
-        echo "Running: db2 REORG INDEXES ALL FOR TABLE \"$SCHEMA_NAME\".\"$TABLE_NAME\"" >> $SUMMARY_LOG
-        db2 "REORG INDEXES ALL FOR TABLE \"$SCHEMA_NAME\".\"$TABLE_NAME\"" >> $SUMMARY_LOG 2>&1
-        INDEX_REORG_STATUS=$?
-
-        if [ $INDEX_REORG_STATUS -eq 0 ]; then
-            echo "Offline index reorg for $SCHEMA_NAME.$TABLE_NAME completed successfully at $(date)" >> $SUMMARY_LOG
-        else
-            echo "ERROR: Offline index reorg for $SCHEMA_NAME.$TABLE_NAME failed with status $INDEX_REORG_STATUS at $(date)" >> $SUMMARY_LOG
-            db2 terminate >> $SUMMARY_LOG 2>&1 # Terminate connection on error
-            return 1 # Indicate failure from the function
-        fi
-
-        echo "Starting runstats for $SCHEMA_NAME.$TABLE_NAME at $(date)" >> $SUMMARY_LOG
-        echo "Running: db2 RUNSTATS ON TABLE \"$SCHEMA_NAME\".\"$TABLE_NAME\" WITH DISTRIBUTION AND DETAILED INDEXES ALL" >> $SUMMARY_LOG
-        db2 "RUNSTATS ON TABLE \"$SCHEMA_NAME\".\"$TABLE_NAME\" WITH DISTRIBUTION AND DETAILED INDEXES ALL" >> $SUMMARY_LOG 2>&1
-        RUNSTATS_STATUS=$?
-
-        END_TIME=$(date +%s)
-        DURATION=$((END_TIME - START_TIME))
-        MINUTES=$((DURATION / 60))
-        SECONDS=$((DURATION % 60))
-
-        if [ $RUNSTATS_STATUS -eq 0 ]; then
-            echo "Completed offline table reorg, index reorg, and runstats for $SCHEMA_NAME.$TABLE_NAME successfully in ${MINUTES}m ${SECONDS}s at $(date)" >> $SUMMARY_LOG
-        else
-            echo "ERROR: Runstats for $SCHEMA_NAME.$TABLE_NAME failed with status $RUNSTATS_STATUS after ${MINUTES}m ${SECONDS}s at $(date)" >> $SUMMARY_LOG
-            db2 terminate >> $SUMMARY_LOG 2>&1 # Terminate connection on error
-            return 1 # Indicate failure from the function
-        fi
-    else
-        # Estimate mode logging
-        echo "ESTIMATE: $SCHEMA_NAME.$TABLE_NAME (Table: ${TABLE_SIZE_GB}GB, est. ${TABLE_EST_MINS} mins; Indexes (offline): ${INDEX_SIZE_GB}GB, est. ${INDEX_EST_MINS} mins; Runstats: est. ${RUNSTATS_EST_MINS} mins; Total: ${TOTAL_EST_MINS} mins)" >> $SUMMARY_LOG
+    
+    # Connect once at the beginning of this batch
+    db2 connect to "$DB_NAME" user "$DB_USER" using "$DB_PASS" > /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Failed to connect to database $DB_NAME for batch processing" >> $SUMMARY_LOG
+        return 1
     fi
+    
+    # Process each table in this batch with the same connection
+    for TABLE_INFO in "$@"; do
+        set -- $TABLE_INFO
+        TABLE_NAME=$1
+        SCHEMA_NAME=$2
+        TABLE_SIZE_GB=$3
+        INDEX_SIZE_GB=$4
+        
+        # Clean sizes (in case they're passed with issues)
+        if [ -z "$TABLE_SIZE_GB" ] || ! echo "$TABLE_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then 
+            TABLE_SIZE_GB="0.01"
+        fi
+        if [ -z "$INDEX_SIZE_GB" ] || ! echo "$INDEX_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+            INDEX_SIZE_GB="0.01"
+        fi
+        
+        # Calculate estimates for logging
+        TOTAL_EST_MINS=$(estimate_time "$TABLE_SIZE_GB" "$INDEX_SIZE_GB")
+        
+        if [ "$MODE" = "run" ]; then
+            START_TIME=$(date +%s)
+            echo "Starting offline table reorg for $SCHEMA_NAME.$TABLE_NAME (Table: ${TABLE_SIZE_GB}GB, Indexes: ${INDEX_SIZE_GB}GB, est. ${TOTAL_EST_MINS} mins) at $(date)" >> $SUMMARY_LOG
 
-    # --- Terminate connection for this specific job ---
-    echo "Terminating connection for $SCHEMA_NAME.$TABLE_NAME." >> $SUMMARY_LOG
-    db2 terminate >> $SUMMARY_LOG 2>&1
-    return 0 # Indicate success
+            echo "Running REORG TABLE for $SCHEMA_NAME.$TABLE_NAME" >> $SUMMARY_LOG
+            db2 "REORG TABLE \"$SCHEMA_NAME\".\"$TABLE_NAME\"" >> $SUMMARY_LOG 2>&1
+            TABLE_REORG_STATUS=$?
+
+            if [ $TABLE_REORG_STATUS -eq 0 ]; then
+                echo "Table reorg for $SCHEMA_NAME.$TABLE_NAME completed successfully" >> $SUMMARY_LOG
+            else
+                echo "ERROR: Table reorg for $SCHEMA_NAME.$TABLE_NAME failed with status $TABLE_REORG_STATUS" >> $SUMMARY_LOG
+                db2 terminate > /dev/null 2>&1 # Terminate connection on error
+                return 1
+            fi
+
+            echo "Running index reorg for $SCHEMA_NAME.$TABLE_NAME" >> $SUMMARY_LOG
+            db2 "REORG INDEXES ALL FOR TABLE \"$SCHEMA_NAME\".\"$TABLE_NAME\"" >> $SUMMARY_LOG 2>&1
+            INDEX_REORG_STATUS=$?
+
+            if [ $INDEX_REORG_STATUS -eq 0 ]; then
+                echo "Index reorg for $SCHEMA_NAME.$TABLE_NAME completed successfully" >> $SUMMARY_LOG
+            else
+                echo "ERROR: Index reorg for $SCHEMA_NAME.$TABLE_NAME failed with status $INDEX_REORG_STATUS" >> $SUMMARY_LOG
+                db2 terminate > /dev/null 2>&1 # Terminate connection on error
+                return 1
+            fi
+
+            echo "Running runstats for $SCHEMA_NAME.$TABLE_NAME" >> $SUMMARY_LOG
+            db2 "RUNSTATS ON TABLE \"$SCHEMA_NAME\".\"$TABLE_NAME\" WITH DISTRIBUTION AND DETAILED INDEXES ALL" >> $SUMMARY_LOG 2>&1
+            RUNSTATS_STATUS=$?
+
+            END_TIME=$(date +%s)
+            DURATION=$((END_TIME - START_TIME))
+            MINUTES=$((DURATION / 60))
+            SECONDS=$((DURATION % 60))
+
+            if [ $RUNSTATS_STATUS -eq 0 ]; then
+                echo "Completed table reorg, index reorg, and runstats for $SCHEMA_NAME.$TABLE_NAME successfully in ${MINUTES}m ${SECONDS}s" >> $SUMMARY_LOG
+            else
+                echo "ERROR: Runstats for $SCHEMA_NAME.$TABLE_NAME failed with status $RUNSTATS_STATUS after ${MINUTES}m ${SECONDS}s" >> $SUMMARY_LOG
+                db2 terminate > /dev/null 2>&1 # Terminate connection on error
+                return 1
+            fi
+        else
+            # Just log estimates in estimate mode
+            TABLE_EST_MINS=$(awk -v size="$TABLE_SIZE_GB" -v thresh=50 'BEGIN {print (size > thresh) ? int(size * 1.2) : (size < 0.01) ? 1 : int(size)}')
+            INDEX_EST_MINS=$(awk -v size="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", (size < 0.01) ? 1 : size * 0.5}')
+            RUNSTATS_EST_MINS=$(awk -v table="$TABLE_SIZE_GB" -v idx="$INDEX_SIZE_GB" 'BEGIN {printf "%.0f", ((table + idx) < 0.01) ? 1 : (table + idx) * 0.1}')
+            echo "ESTIMATE: $SCHEMA_NAME.$TABLE_NAME (Table: ${TABLE_SIZE_GB}GB, est. ${TABLE_EST_MINS} mins; Indexes: ${INDEX_SIZE_GB}GB, est. ${INDEX_EST_MINS} mins; Runstats: est. ${RUNSTATS_EST_MINS} mins; Total: ${TOTAL_EST_MINS} mins)" >> $SUMMARY_LOG
+        fi
+    done
+    
+    # Terminate the connection once after all tables in this batch
+    db2 terminate > /dev/null 2>&1
+    return 0
 }
 
 # --- Main Script Logic ---
 
-# Connect to the database (for main script operations like QUIESCE, UNQUIESCE, getting table list)
+# Connect to the database (for main script operations)
 echo "Establishing main connection to $DB_NAME..." >> $SUMMARY_LOG
-db2 connect to "$DB_NAME" user "$DB_USER" using "$DB_PASS" >> $SUMMARY_LOG 2>&1
+db2 connect to "$DB_NAME" user "$DB_USER" using "$DB_PASS" > /dev/null 2>&1
 if [ $? -ne 0 ]; then
     echo "ERROR: Failed to establish main connection to database $DB_NAME" >> $SUMMARY_LOG
     exit 1
 fi
-echo "Main connection established." >> $SUMMARY_LOG
 
 # Quiesce the database in run mode
 if [ "$MODE" = "run" ]; then
@@ -172,23 +182,22 @@ if [ "$MODE" = "run" ]; then
     db2 "QUIESCE DATABASE IMMEDIATE FORCE CONNECTIONS" >> $SUMMARY_LOG 2>&1
     if [ $? -ne 0 ]; then
         echo "ERROR: Failed to quiesce database $DB_NAME" >> $SUMMARY_LOG
-        db2 terminate >> $SUMMARY_LOG 2>&1
+        db2 terminate > /dev/null 2>&1
         exit 1
     fi
     echo "Database $DB_NAME quiesced successfully" >> $SUMMARY_LOG
 fi
 
-# Get the list of all tables and indexes by size (Improved Parsing)
+# Get the list of all tables and indexes by size
 TABLE_LIST_FILE="${LOG_DIR}/all_tables_${TIMESTAMP}.txt"
-echo "Identifying tables and indexes that need reorganization by size..." >> $SUMMARY_LOG
-SQL_QUERY="SELECT RTRIM(TABSCHEMA), RTRIM(TABNAME), \
+echo "Identifying tables that need reorganization..." >> $SUMMARY_LOG
+SQL_QUERY="SELECT RTRIM(TABNAME), RTRIM(TABSCHEMA), \
            COALESCE(CAST(DECIMAL(GREATEST(DATA_OBJECT_P_SIZE, 0)) / 1024.0 / 1024.0 AS DECIMAL(10,2)), 0.01), \
            COALESCE(CAST(DECIMAL(GREATEST(INDEX_OBJECT_P_SIZE, 0)) / 1024.0 / 1024.0 AS DECIMAL(10,2)), 0.01) \
            FROM SYSIBMADM.ADMINTABINFO \
            WHERE TABSCHEMA NOT LIKE 'SYS%' AND DATA_OBJECT_P_SIZE IS NOT NULL AND INDEX_OBJECT_P_SIZE IS NOT NULL \
            ORDER BY (DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE) DESC"
 
-echo "Executing query to fetch table list..." >> $SUMMARY_LOG
 db2 -x "$SQL_QUERY" > "$TABLE_LIST_FILE"
 QUERY_STATUS=$?
 if [ $QUERY_STATUS -ne 0 ]; then
@@ -196,68 +205,47 @@ if [ $QUERY_STATUS -ne 0 ]; then
    if [ "$MODE" = "run" ]; then
       db2 "UNQUIESCE DATABASE" >> $SUMMARY_LOG 2>&1 # Attempt unquiesce on error
    fi
-   db2 terminate >> $SUMMARY_LOG 2>&1
+   db2 terminate > /dev/null 2>&1
    exit 1
 fi
-echo "Table list saved to $TABLE_LIST_FILE" >> $SUMMARY_LOG
 
-
-# Calculate total time estimate & run estimate mode if selected
+# Calculate total time estimate
 echo "Calculating time estimates..." >> $SUMMARY_LOG
 TOTAL_EST_MINS=0
 TABLE_COUNT=0
-# Use process substitution to avoid subshell issues with counter variables
+
+# First pass to calculate estimates and count tables
 while IFS= read -r line || [[ -n "$line" ]]; do
-    # Skip empty lines potentially returned by db2 -x
+    # Skip empty lines
     [[ -z "$line" ]] && continue
 
-    # Use parameter expansion for safer splitting on whitespace
     set -- $line
-    SCHEMA_NAME=$1
-    TABLE_NAME=$2
+    TABLE_NAME=$1
+    SCHEMA_NAME=$2
     TABLE_SIZE_GB=$3
     INDEX_SIZE_GB=$4
 
-    echo "DEBUG: Processing line: SCHEMA_NAME='$SCHEMA_NAME', TABLE_NAME='$TABLE_NAME', TABLE_SIZE_GB='$TABLE_SIZE_GB', INDEX_SIZE_GB='$INDEX_SIZE_GB'" >> $SUMMARY_LOG
-
     # Handle potentially malformed sizes (basic check)
     if [ -z "$TABLE_SIZE_GB" ] || ! echo "$TABLE_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
-        echo "WARNING: Invalid TABLE_SIZE_GB '$TABLE_SIZE_GB' for $SCHEMA_NAME.$TABLE_NAME, defaulting to 0.01" >> $SUMMARY_LOG
         TABLE_SIZE_GB="0.01"
     fi
     if [ -z "$INDEX_SIZE_GB" ] || ! echo "$INDEX_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
-        echo "WARNING: Invalid INDEX_SIZE_GB '$INDEX_SIZE_GB' for $SCHEMA_NAME.$TABLE_NAME, defaulting to 0.01" >> $SUMMARY_LOG
         INDEX_SIZE_GB="0.01"
     fi
 
     # Calculate estimate and increment counters
     TABLE_EST=$(estimate_time "$TABLE_SIZE_GB" "$INDEX_SIZE_GB")
-    if [ -z "$TABLE_EST" ]; then
-        echo "ERROR: Failed to estimate time for $SCHEMA_NAME.$TABLE_NAME, skipping" >> $SUMMARY_LOG
-        continue
-    fi
     TOTAL_EST_MINS=$((TOTAL_EST_MINS + TABLE_EST))
     TABLE_COUNT=$((TABLE_COUNT + 1))
-
-    echo "DEBUG: Added TABLE_EST=$TABLE_EST mins for $SCHEMA_NAME.$TABLE_NAME, TOTAL_EST_MINS=$TOTAL_EST_MINS" >> $SUMMARY_LOG
-
-    # In estimate mode, call the function (which now connects/terminates itself)
-    if [ "$MODE" = "estimate" ]; then
-        # Pass sanitized values
-        SANITIZED_TABLE_SIZE_GB=$(awk -v size="$TABLE_SIZE_GB" 'BEGIN {printf "%.2f", size + 0}')
-        SANITIZED_INDEX_SIZE_GB=$(awk -v size="$INDEX_SIZE_GB" 'BEGIN {printf "%.2f", size + 0}')
-        run_reorg "$TABLE_NAME" "$SCHEMA_NAME" "$SANITIZED_TABLE_SIZE_GB" "$SANITIZED_INDEX_SIZE_GB"
-        # Don't need to check return code here in estimate mode
-    fi
 done < "$TABLE_LIST_FILE"
-
 
 echo "Total tables to process: $TABLE_COUNT" >> $SUMMARY_LOG
 
 # Adjust total estimate for concurrency (divide by CONCURRENT_JOBS for parallel jobs)
+# Fixed: Add 1 to ensure we don't divide by zero + provide buffer for very small tables
 if [ "$TABLE_COUNT" -gt 0 ] && [ "$CONCURRENT_JOBS" -gt 0 ]; then
     # Use awk for floating point division before rounding
-    PARALLEL_EST_MINS=$(awk -v total="$TOTAL_EST_MINS" -v jobs="$CONCURRENT_JOBS" 'BEGIN {printf "%.0f", (total / jobs) + 0.5}') # Round up
+    PARALLEL_EST_MINS=$(awk -v total="$TOTAL_EST_MINS" -v jobs="$CONCURRENT_JOBS" 'BEGIN {printf "%.0f", (total / jobs) + 1}') 
 else
     echo "WARNING: No valid tables or CONCURRENT_JOBS=0, setting PARALLEL_EST_MINS to 0" >> $SUMMARY_LOG
     PARALLEL_EST_MINS=0
@@ -267,13 +255,13 @@ fi
 DB2RBIND_EST_MINS=5
 FINAL_EST_MINS=$((PARALLEL_EST_MINS + DB2RBIND_EST_MINS))
 
-# Fixed: Use a more reliable calculation for hours from minutes
+# Calculate hours from minutes
 TOTAL_EST_HRS=$(awk -v mins="$FINAL_EST_MINS" 'BEGIN {printf "%.1f", mins / 60}')
 echo "Total estimated time for all tables (without concurrency): $TOTAL_EST_MINS minutes" >> $SUMMARY_LOG
 echo "Total estimated time with concurrency of $CONCURRENT_JOBS jobs: $PARALLEL_EST_MINS minutes" >> $SUMMARY_LOG
 echo "Total estimated time (including db2rbind, considering concurrency): $FINAL_EST_MINS minutes ($TOTAL_EST_HRS hours)" >> $SUMMARY_LOG
 
-# Fixed: Ensure we have a numeric comparison with a valid number
+# Check if estimate exceeds time window
 if [ -n "$TOTAL_EST_HRS" ] && [ $(awk -v hrs="$TOTAL_EST_HRS" 'BEGIN {print (hrs > 4.0) ? 1 : 0}') -eq 1 ]; then
     echo "WARNING: Estimated time exceeds 4-hour window!" >> $SUMMARY_LOG
 fi
@@ -281,7 +269,7 @@ fi
 # If just estimating, exit here
 if [ "$MODE" = "estimate" ]; then
     echo "Estimation completed. See log: $SUMMARY_LOG"
-    db2 terminate >> $SUMMARY_LOG 2>&1 # Terminate the main connection
+    db2 terminate > /dev/null 2>&1 # Terminate the main connection
     rm -f "$TABLE_LIST_FILE" # Clean up temp file
     exit 0
 fi
@@ -295,101 +283,76 @@ if ! echo "$CONCURRENT_JOBS" | grep -qE '^[1-9][0-9]*$'; then
     CONCURRENT_JOBS=1
 fi
 
-# Progress tracking variables
-TABLES_STARTED=0
-TABLES_SUCCESS=0
-TABLES_FAILED=0
-TOTAL_TABLES=$TABLE_COUNT # Use the count determined earlier
+# Process tables in batches
+echo "Processing $TABLE_COUNT tables with $CONCURRENT_JOBS concurrent jobs..." >> $SUMMARY_LOG
 
-# Process all tables in a single job with continuous concurrency
-echo "Processing $TABLE_COUNT tables, $CONCURRENT_JOBS concurrently..." >> $SUMMARY_LOG
+# Create a temporary directory to store batch files
+BATCH_DIR="${LOG_DIR}/batches_${TIMESTAMP}"
+mkdir -p "$BATCH_DIR"
 
-# Use process substitution again to read the file
+# Distribute tables into CONCURRENT_JOBS batches for balanced processing
+BATCH_NUM=0
 while IFS= read -r line || [[ -n "$line" ]]; do
-     [[ -z "$line" ]] && continue
-    # Limit concurrent jobs
-    while true; do
-        # jobs -p lists PIDs of background jobs for the current shell
-        ACTIVE_JOBS=$(jobs -p | wc -l)
-         if [ -z "$ACTIVE_JOBS" ]; then # Handle case where wc -l might return empty if no jobs
-             ACTIVE_JOBS=0
-         fi
-        if [ "$ACTIVE_JOBS" -lt "$CONCURRENT_JOBS" ]; then
-            break # Slot available
-        else
-            echo "Waiting: Active jobs ($ACTIVE_JOBS/$CONCURRENT_JOBS) running. Sleeping 10s..." >> $SUMMARY_LOG
-            sleep 10
-            # Check for completed jobs without blocking indefinitely
-            wait -n # Waits for the next background job to finish
-        fi
-    done
-
-    set -- $line
-    SCHEMA_NAME=$1
-    TABLE_NAME=$2
-    TABLE_SIZE_GB=$3
-    INDEX_SIZE_GB=$4
-
-    # Re-validate/sanitize sizes just before launching the job
-    if [ -z "$TABLE_SIZE_GB" ] || ! echo "$TABLE_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then TABLE_SIZE_GB="0.01"; fi
-    if [ -z "$INDEX_SIZE_GB" ] || ! echo "$INDEX_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then INDEX_SIZE_GB="0.01"; fi
-    SANITIZED_TABLE_SIZE_GB=$(awk -v size="$TABLE_SIZE_GB" 'BEGIN {printf "%.2f", size + 0}')
-    SANITIZED_INDEX_SIZE_GB=$(awk -v size="$INDEX_SIZE_GB" 'BEGIN {printf "%.2f", size + 0}')
-
-
-    # Launch the reorg function in the background
-    run_reorg "$TABLE_NAME" "$SCHEMA_NAME" "$SANITIZED_TABLE_SIZE_GB" "$SANITIZED_INDEX_SIZE_GB" &
-    # Store the PID of the background job
-    BG_PID=$!
-    echo "Launched job for $SCHEMA_NAME.$TABLE_NAME (PID: $BG_PID)" >> $SUMMARY_LOG
-
-    TABLES_STARTED=$((TABLES_STARTED + 1))
-    if [ "$TOTAL_TABLES" -gt 0 ]; then
-      PCT_STARTED=$(awk -v started="$TABLES_STARTED" -v total="$TOTAL_TABLES" 'BEGIN {printf "%.2f", started * 100 / total}')
-      echo "Progress: $TABLES_STARTED/$TOTAL_TABLES tables launched ($PCT_STARTED%)" >> $SUMMARY_LOG
-    fi
-
-    sleep 2 # Small delay between launching jobs
-
+    [[ -z "$line" ]] && continue
+    
+    # Append this table to its batch file
+    echo "$line" >> "${BATCH_DIR}/batch_${BATCH_NUM}.txt"
+    
+    # Move to next batch file (round-robin)
+    BATCH_NUM=$(( (BATCH_NUM + 1) % CONCURRENT_JOBS ))
 done < "$TABLE_LIST_FILE"
 
+# Process each batch in parallel
+for BATCH_FILE in "${BATCH_DIR}"/batch_*.txt; do
+    if [ ! -f "$BATCH_FILE" ]; then
+        continue # Skip if no batch files found
+    fi
+    
+    # Build table arguments for the batch function
+    BATCH_ARGS=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        [[ -z "$line" ]] && continue
+        BATCH_ARGS+=("$line")
+    done < "$BATCH_FILE"
+    
+    # Only process if we have tables in this batch
+    if [ ${#BATCH_ARGS[@]} -gt 0 ]; then
+        BATCH_NUM=$(basename "$BATCH_FILE" | sed 's/batch_\(.*\)\.txt/\1/')
+        echo "Starting batch $BATCH_NUM with ${#BATCH_ARGS[@]} tables" >> $SUMMARY_LOG
+        
+        # Launch the batch processing function in background
+        process_table_batch "${BATCH_ARGS[@]}" &
+        echo "Launched batch $BATCH_NUM (PID: $!)" >> $SUMMARY_LOG
+    fi
+done
 
-# Wait for all remaining background jobs to complete
-echo "All jobs launched. Waiting for remaining background processes to complete..." >> $SUMMARY_LOG
+# Wait for all batch processing to complete
+echo "All batches launched. Waiting for completion..." >> $SUMMARY_LOG
 wait
-echo "All background reorg/runstats jobs have finished." >> $SUMMARY_LOG
-
-# Check results (Optional but recommended: Iterate through PIDs or use a more complex mechanism if needed)
-# Simple approach: Just report completion. Add more checks if needed.
+echo "All table processing completed." >> $SUMMARY_LOG
 
 # Perform db2rbind
-if [ "$MODE" = "run" ]; then
-    echo "Starting db2rbind for all packages at $(date)" >> $SUMMARY_LOG
-    # WARNING: Passing credentials like this is insecure.
-    db2rbind "$DB_NAME" -l "$SUMMARY_LOG" -u "$DB_USER" -p "$DB_PASS" all
-    RBIND_STATUS=$?
-    if [ $RBIND_STATUS -eq 0 ]; then
-        echo "db2rbind completed successfully at $(date)" >> $SUMMARY_LOG
-    elif [ $RBIND_STATUS -eq 4 ]; then
-         echo "WARNING: db2rbind completed with warnings (Status: $RBIND_STATUS) at $(date)" >> $SUMMARY_LOG
-    else
-        echo "ERROR: db2rbind failed with status $RBIND_STATUS at $(date)" >> $SUMMARY_LOG
-        # Decide if this is a critical failure
-    fi
+echo "Starting db2rbind for all packages at $(date)" >> $SUMMARY_LOG
+db2rbind "$DB_NAME" -l "$SUMMARY_LOG" -u "$DB_USER" -p "$DB_PASS" all
+RBIND_STATUS=$?
+if [ $RBIND_STATUS -eq 0 ]; then
+    echo "db2rbind completed successfully at $(date)" >> $SUMMARY_LOG
+elif [ $RBIND_STATUS -eq 4 ]; then
+     echo "WARNING: db2rbind completed with warnings (Status: $RBIND_STATUS) at $(date)" >> $SUMMARY_LOG
+else
+    echo "ERROR: db2rbind failed with status $RBIND_STATUS at $(date)" >> $SUMMARY_LOG
 fi
 
-# Unquiesce the database in run mode
-if [ "$MODE" = "run" ]; then
-    echo "Unquiescing database $DB_NAME at $(date)" >> $SUMMARY_LOG
-    db2 "UNQUIESCE DATABASE" >> $SUMMARY_LOG 2>&1
-    if [ $? -eq 0 ]; then
-        echo "Database $DB_NAME unquiesced successfully" >> $SUMMARY_LOG
-    else
-        # This is a critical error - manual intervention likely needed
-        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >> $SUMMARY_LOG
-        echo "ERROR: Failed to unquiesce database $DB_NAME. MANUAL INTERVENTION REQUIRED!" >> $SUMMARY_LOG
-        echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >> $SUMMARY_LOG
-    fi
+# Unquiesce the database
+echo "Unquiescing database $DB_NAME at $(date)" >> $SUMMARY_LOG
+db2 "UNQUIESCE DATABASE" >> $SUMMARY_LOG 2>&1
+if [ $? -eq 0 ]; then
+    echo "Database $DB_NAME unquiesced successfully" >> $SUMMARY_LOG
+else
+    # This is a critical error - manual intervention likely needed
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >> $SUMMARY_LOG
+    echo "ERROR: Failed to unquiesce database $DB_NAME. MANUAL INTERVENTION REQUIRED!" >> $SUMMARY_LOG
+    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >> $SUMMARY_LOG
 fi
 
 # Final summary
@@ -404,19 +367,16 @@ echo "DB2 Offline Reorg/Runstats/Rbind Process Summary" >> $SUMMARY_LOG
 echo "Mode: $MODE" >> $SUMMARY_LOG
 echo "End Time: $(date)" >> $SUMMARY_LOG
 echo "Total actual execution time: ${TOTAL_HOURS}h ${TOTAL_MINUTES}m ${TOTAL_SECONDS}s" >> $SUMMARY_LOG
-echo "Total tables identified for processing: $TOTAL_TABLES" >> $SUMMARY_LOG
-echo "Total tables launched: $TABLES_STARTED" >> $SUMMARY_LOG
-# Note: Accurate success/failure counts would require more complex tracking of background job exit codes.
+echo "Total tables identified for processing: $TABLE_COUNT" >> $SUMMARY_LOG
 echo "--------------------------------------------------" >> $SUMMARY_LOG
 
-
 # Disconnect the main connection from the database
-db2 terminate >> $SUMMARY_LOG 2>&1
+db2 terminate > /dev/null 2>&1
 
-# Clean up temp file
+# Clean up temp files
 rm -f "$TABLE_LIST_FILE"
+rm -rf "$BATCH_DIR"
 
 echo "DB2 offline reorganization, runstats, and db2rbind process completed. See log: $SUMMARY_LOG"
-echo "Final summary appended to log: $SUMMARY_LOG" >> $SUMMARY_LOG
 
 exit 0
