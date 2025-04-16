@@ -33,6 +33,10 @@ TOTAL_START_TIME=$(date +%s)
 echo "Time window: 4 hours" >> $SUMMARY_LOG
 echo "WARNING: Hardcoded credentials used. NOT recommended for production." >> $SUMMARY_LOG
 
+# Initialize variables
+TABLE_COUNT=0
+CONCURRENT_JOBS=$((CONCURRENT_JOBS)) # Ensure numeric, defaults to 3
+
 # Function to estimate reorg, runstats, and db2rbind time based on table and index sizes
 estimate_time() {
     TABLE_SIZE_GB=$1
@@ -222,7 +226,7 @@ done < "$TABLE_LIST_FILE"
 echo "Total tables to process: $TABLE_COUNT" >> $SUMMARY_LOG
 
 # Estimate with concurrency
-if [ "$TABLE_COUNT" -gt 0 ] && [ "$CONCURRENT_JOBS" -gt 0 ]; then
+if [ -n "$TABLE_COUNT" ] && [ "$TABLE_COUNT" -gt 0 ] && [ -n "$CONCURRENT_JOBS" ] && [ "$CONCURRENT_JOBS" -gt 0 ]; then
     PARALLEL_EST_MINS=$(( (TOTAL_EST_MINS / CONCURRENT_JOBS) + 1 ))
 else
     echo "WARNING: No tables or CONCURRENT_JOBS=0, setting PARALLEL_EST_MINS to 0" >> $SUMMARY_LOG
@@ -238,7 +242,7 @@ echo "Estimated time (parallel, with $CONCURRENT_JOBS jobs): $PARALLEL_EST_MINS 
 echo "Total estimated time (including db2rbind): $FINAL_EST_MINS minutes ($TOTAL_EST_HRS hours)" >> $SUMMARY_LOG
 
 # Warn if estimate exceeds 4 hours
-if [ $(awk -v hrs="$TOTAL_EST_HRS" 'BEGIN {print (hrs > 4.0) ? 1 : 0}') -eq 1 ]; then
+if [ -n "$TOTAL_EST_HRS" ] && [ $(awk -v hrs="$TOTAL_EST_HRS" 'BEGIN {print (hrs > 4.0) ? 1 : 0}') -eq 1 ]; then
     echo "WARNING: Estimated time exceeds 4-hour window!" >> $SUMMARY_LOG
 fi
 
