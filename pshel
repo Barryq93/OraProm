@@ -209,6 +209,16 @@ if [ $QUERY_STATUS -ne 0 ]; then
    exit 1
 fi
 
+# Check if table list is empty
+if [ ! -s "$TABLE_LIST_FILE" ]; then
+    echo "ERROR: No tables found for processing" >> $SUMMARY_LOG
+    if [ "$MODE" = "run" ]; then
+        db2 "UNQUIESCE DATABASE" >> $SUMMARY_LOG 2>&1
+    fi
+    db2 terminate > /dev/null 2>&1
+    exit 1
+fi
+
 # Calculate total time estimate
 echo "Calculating time estimates..." >> $SUMMARY_LOG
 TOTAL_EST_MINS=0
@@ -241,12 +251,9 @@ done < "$TABLE_LIST_FILE"
 
 echo "Total tables to process: $TABLE_COUNT" >> $SUMMARY_LOG
 
-# Adjust total estimate for concurrency (divide by CONCURRENT_JOBS for parallel jobs)
-# Fixed: Add 1 to ensure we don't divide by zero + provide buffer for very small tables
-# Fix validation before division
+# Adjust total estimate for concurrency
 if [ -n "$TABLE_COUNT" ] && [ "$TABLE_COUNT" -gt 0 ] && [ -n "$CONCURRENT_JOBS" ] && [ "$CONCURRENT_JOBS" -gt 0 ]; then
-    # Use awk for floating point division before rounding
-    PARALLEL_EST_MINS=$(awk -v total="$TOTAL_EST_MINS" -v jobs="$CONCURRENT_JOBS" 'BEGIN {printf "%.0f", (total / jobs) + 1}') 
+    PARALLEL_EST_MINS=$(( (TOTAL_EST_MINS / CONCURRENT_JOBS) + 1 ))
 else
     echo "WARNING: No valid tables or CONCURRENT_JOBS=0, setting PARALLEL_EST_MINS to 0" >> $SUMMARY_LOG
     PARALLEL_EST_MINS=0
@@ -258,8 +265,8 @@ FINAL_EST_MINS=$((PARALLEL_EST_MINS + DB2RBIND_EST_MINS))
 
 # Calculate hours from minutes
 TOTAL_EST_HRS=$(awk -v mins="$FINAL_EST_MINS" 'BEGIN {printf "%.1f", mins / 60}')
-echo "Total estimated time for all tables (without concurrency): $TOTAL_EST_MINS minutes" >> $SUMMARY_LOG
-echo "Total estimated time with concurrency of $CONCURRENT_JOBS jobs: $PARALLEL_EST_MINS minutes" >> $SUMMARY_LOG
+echo "Estimated time (serial, no concurrency): $TOTAL_EST_MINS minutes" >> $SUMMARY_LOG
+echo "Estimated time (parallel, with $CONCURRENT_JOBS jobs): $PARALLEL_EST_MINS minutes" >> $SUMMARY_LOG
 echo "Total estimated time (including db2rbind, considering concurrency): $FINAL_EST_MINS minutes ($TOTAL_EST_HRS hours)" >> $SUMMARY_LOG
 
 # Check if estimate exceeds time window
@@ -278,9 +285,9 @@ fi
 # --- Execution Mode ---
 echo "Proceeding with actual offline reorganization, runstats, and db2rbind..." >> $SUMMARY_LOG
 
-# Validate CONCURRENT_JOBS again just before use
-if ! echo "$CONCURRENT_JOBS" | grep -qE '^[1-9][0-9]*$'; then
-    echo "ERROR: CONCURRENT_JOBS is invalid ('$CONCURRENT_JOBS'). Must be a positive integer. Defaulting to 1." >> $SUMMARY_LOG
+# Validate CONCURRENT_JOBS
+if [ -z "$CONCURRENT_JOBS" ] || [ "$CONCURRENT_JOBS" -lt 1 ] 2>/dev/null; then
+    echo "ERROR: CONCURRENT_JOBS is invalid ('$CONCURRENT_JOBS'). Defaulting to 1." >> $SUMMARY_LOG
     CONCURRENT_JOBS=1
 fi
 
@@ -295,11 +302,7 @@ mkdir -p "$BATCH_DIR"
 BATCH_NUM=0
 while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -z "$line" ]] && continue
-    
-    # Append this table to its batch file
     echo "$line" >> "${BATCH_DIR}/batch_${BATCH_NUM}.txt"
-    
-    # Move to next batch file (round-robin)
     BATCH_NUM=$(( (BATCH_NUM + 1) % CONCURRENT_JOBS ))
 done < "$TABLE_LIST_FILE"
 
@@ -320,8 +323,6 @@ for BATCH_FILE in "${BATCH_DIR}"/batch_*.txt; do
     if [ ${#BATCH_ARGS[@]} -gt 0 ]; then
         BATCH_NUM=$(basename "$BATCH_FILE" | sed 's/batch_\(.*\)\.txt/\1/')
         echo "Starting batch $BATCH_NUM with ${#BATCH_ARGS[@]} tables" >> $SUMMARY_LOG
-        
-        # Launch the batch processing function in background
         process_table_batch "${BATCH_ARGS[@]}" &
         echo "Launched batch $BATCH_NUM (PID: $!)" >> $SUMMARY_LOG
     fi
@@ -339,7 +340,7 @@ RBIND_STATUS=$?
 if [ $RBIND_STATUS -eq 0 ]; then
     echo "db2rbind completed successfully at $(date)" >> $SUMMARY_LOG
 elif [ $RBIND_STATUS -eq 4 ]; then
-     echo "WARNING: db2rbind completed with warnings (Status: $RBIND_STATUS) at $(date)" >> $SUMMARY_LOG
+    echo "WARNING: db2rbind completed with warnings (Status: $RBIND_STATUS) at $(date)" >> $SUMMARY_LOG
 else
     echo "ERROR: db2rbind failed with status $RBIND_STATUS at $(date)" >> $SUMMARY_LOG
 fi
@@ -350,7 +351,6 @@ db2 "UNQUIESCE DATABASE" >> $SUMMARY_LOG 2>&1
 if [ $? -eq 0 ]; then
     echo "Database $DB_NAME unquiesced successfully" >> $SUMMARY_LOG
 else
-    # This is a critical error - manual intervention likely needed
     echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >> $SUMMARY_LOG
     echo "ERROR: Failed to unquiesce database $DB_NAME. MANUAL INTERVENTION REQUIRED!" >> $SUMMARY_LOG
     echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!" >> $SUMMARY_LOG
