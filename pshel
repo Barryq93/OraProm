@@ -35,7 +35,11 @@ echo "WARNING: Hardcoded credentials used. NOT recommended for production." >> $
 
 # Initialize variables
 TABLE_COUNT=0
-CONCURRENT_JOBS=$((CONCURRENT_JOBS)) # Ensure numeric, defaults to 3
+# Ensure CONCURRENT_JOBS is numeric and at least 1
+if [ -z "$CONCURRENT_JOBS" ] || ! echo "$CONCURRENT_JOBS" | grep -qE '^[0-9]+$'; then
+    echo "ERROR: CONCURRENT_JOBS invalid ('$CONCURRENT_JOBS'). Defaulting to 3." >> $SUMMARY_LOG
+    CONCURRENT_JOBS=3
+fi
 
 # Function to estimate reorg, runstats, and db2rbind time based on table and index sizes
 estimate_time() {
@@ -226,7 +230,7 @@ done < "$TABLE_LIST_FILE"
 echo "Total tables to process: $TABLE_COUNT" >> $SUMMARY_LOG
 
 # Estimate with concurrency
-if [ -n "$TABLE_COUNT" ] && [ "$TABLE_COUNT" -gt 0 ] && [ -n "$CONCURRENT_JOBS" ] && [ "$CONCURRENT_JOBS" -gt 0 ]; then
+if [ "$TABLE_COUNT" -gt 0 ] && [ "$CONCURRENT_JOBS" -gt 0 ]; then
     PARALLEL_EST_MINS=$(( (TOTAL_EST_MINS / CONCURRENT_JOBS) + 1 ))
 else
     echo "WARNING: No tables or CONCURRENT_JOBS=0, setting PARALLEL_EST_MINS to 0" >> $SUMMARY_LOG
@@ -257,10 +261,10 @@ fi
 # --- Execution Mode ---
 echo "Starting reorganization with $CONCURRENT_JOBS concurrent jobs..." >> $SUMMARY_LOG
 
-# Validate CONCURRENT_JOBS
+# Validate CONCURRENT_JOBS again before execution
 if [ -z "$CONCURRENT_JOBS" ] || [ "$CONCURRENT_JOBS" -lt 1 ] 2>/dev/null; then
-    echo "ERROR: CONCURRENT_JOBS invalid ('$CONCURRENT_JOBS'). Defaulting to 1." >> $SUMMARY_LOG
-    CONCURRENT_JOBS=1
+    echo "ERROR: CONCURRENT_JOBS invalid ('$CONCURRENT_JOBS'). Defaulting to 3." >> $SUMMARY_LOG
+    CONCURRENT_JOBS=3
 fi
 
 # Process tables in parallel, largest first
