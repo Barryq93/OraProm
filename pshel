@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # DB2 Reorganization Script with Estimation Mode (Offline Tables, Index Reorg, Runstats, and db2rbind)
-# SIMPLIFIED VERSION: Processes largest tables first, up to CONCURRENT_JOBS in parallel, no batch files
+# SIMPLIFIED VERSION: Processes largest tables first, up to CONCURRENT_JOBS in parallel using jobs command
 # Quiesces the database, performs offline reorgs and runstats concurrently, rebinds packages with db2rbind
 
 # Check command line arguments
@@ -240,7 +240,7 @@ fi
 # Add db2rbind estimate
 DB2RBIND_EST_MINS=5
 FINAL_EST_MINS=$((PARALLEL_EST_MINS + DB2RBIND_EST_MINS))
-TOTAL_EST_HRS=$(awk -v mins="$FINAL_EST_MINS" 'BEGIN {printf "%.1f", mins / 60}')
+TOTAL_EST_HRS=$(awk -v mins="$FINAL_EST_MINS" 'BEGIN {printf "%.1f", mins варианты/60}')
 echo "Estimated time (serial, no concurrency): $TOTAL_EST_MINS minutes" >> $SUMMARY_LOG
 echo "Estimated time (parallel, with $CONCURRENT_JOBS jobs): $PARALLEL_EST_MINS minutes" >> $SUMMARY_LOG
 echo "Total estimated time (including db2rbind): $FINAL_EST_MINS minutes ($TOTAL_EST_HRS hours)" >> $SUMMARY_LOG
@@ -268,7 +268,6 @@ if [ -z "$CONCURRENT_JOBS" ] || [ "$CONCURRENT_JOBS" -lt 1 ] 2>/dev/null; then
 fi
 
 # Process tables in parallel, largest first
-ACTIVE_JOBS=0
 while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -z "$line" ]] && continue
     set -- $line
@@ -277,24 +276,19 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     TABLE_SIZE_GB=$3
     INDEX_SIZE_GB=$4
 
-    # Launch job if fewer than CONCURRENT_JOBS are running
-    if [ $ACTIVE_JOBS -lt $CONCURRENT_JOBS ]; then
-        process_table "$TABLE_NAME" "$SCHEMA_NAME" "$TABLE_SIZE_GB" "$INDEX_SIZE_GB" &
-        ACTIVE_JOBS=$((ACTIVE_JOBS + 1))
-        echo "Launched job for $SCHEMA_NAME.$TABLE_NAME (PID: $!, Active jobs: $ACTIVE_JOBS)" >> $SUMMARY_LOG
-    else
-        # Wait for a job to finish
-        wait -n
-        ACTIVE_JOBS=$((ACTIVE_JOBS - 1))
-        echo "Job completed, active jobs now: $ACTIVE_JOBS" >> $SUMMARY_LOG
-        # Launch next job
-        process_table "$TABLE_NAME" "$SCHEMA_NAME" "$TABLE_SIZE_GB" "$INDEX_SIZE_GB" &
-        ACTIVE_JOBS=$((ACTIVE_JOBS + 1))
-        echo "Launched job for $SCHEMA_NAME.$TABLE_NAME (PID: $!, Active jobs: $ACTIVE_JOBS)" >> $SUMMARY_LOG
-    fi
+    # Check number of running jobs
+    RUNNING_JOBS=$(jobs -p | wc -l)
+    while [ "$RUNNING_JOBS" -ge "$CONCURRENT_JOBS" ]; do
+        wait # Wait for all jobs to complete
+        RUNNING_JOBS=$(jobs -p | wc -l)
+    done
+
+    # Launch job
+    process_table "$TABLE_NAME" "$SCHEMA_NAME" "$TABLE_SIZE_GB" "$INDEX_SIZE_GB" &
+    echo "Launched job for $SCHEMA_NAME.$TABLE_NAME (PID: $!)" >> $SUMMARY_LOG
 done < "$TABLE_LIST_FILE"
 
-# Wait for remaining jobs
+# Wait for all jobs to complete
 echo "Waiting for all jobs to complete..." >> $SUMMARY_LOG
 wait
 echo "All table processing completed." >> $SUMMARY_LOG
