@@ -243,7 +243,8 @@ echo "Total tables to process: $TABLE_COUNT" >> $SUMMARY_LOG
 
 # Adjust total estimate for concurrency (divide by CONCURRENT_JOBS for parallel jobs)
 # Fixed: Add 1 to ensure we don't divide by zero + provide buffer for very small tables
-if [ "$TABLE_COUNT" -gt 0 ] && [ "$CONCURRENT_JOBS" -gt 0 ]; then
+# Fix validation before division
+if [ -n "$TABLE_COUNT" ] && [ "$TABLE_COUNT" -gt 0 ] && [ -n "$CONCURRENT_JOBS" ] && [ "$CONCURRENT_JOBS" -gt 0 ]; then
     # Use awk for floating point division before rounding
     PARALLEL_EST_MINS=$(awk -v total="$TOTAL_EST_MINS" -v jobs="$CONCURRENT_JOBS" 'BEGIN {printf "%.0f", (total / jobs) + 1}') 
 else
