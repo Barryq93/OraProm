@@ -221,11 +221,11 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     echo "DEBUG: Processing line: SCHEMA_NAME='$SCHEMA_NAME', TABLE_NAME='$TABLE_NAME', TABLE_SIZE_GB='$TABLE_SIZE_GB', INDEX_SIZE_GB='$INDEX_SIZE_GB'" >> $SUMMARY_LOG
 
     # Handle potentially malformed sizes (basic check)
-    if ! echo "$TABLE_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+    if [ -z "$TABLE_SIZE_GB" ] || ! echo "$TABLE_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
         echo "WARNING: Invalid TABLE_SIZE_GB '$TABLE_SIZE_GB' for $SCHEMA_NAME.$TABLE_NAME, defaulting to 0.01" >> $SUMMARY_LOG
         TABLE_SIZE_GB="0.01"
     fi
-    if ! echo "$INDEX_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
+    if [ -z "$INDEX_SIZE_GB" ] || ! echo "$INDEX_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then
         echo "WARNING: Invalid INDEX_SIZE_GB '$INDEX_SIZE_GB' for $SCHEMA_NAME.$TABLE_NAME, defaulting to 0.01" >> $SUMMARY_LOG
         INDEX_SIZE_GB="0.01"
     fi
@@ -257,19 +257,24 @@ echo "Total tables to process: $TABLE_COUNT" >> $SUMMARY_LOG
 # Adjust total estimate for concurrency (divide by CONCURRENT_JOBS for parallel jobs)
 if [ "$TABLE_COUNT" -gt 0 ] && [ "$CONCURRENT_JOBS" -gt 0 ]; then
     # Use awk for floating point division before rounding
-    TOTAL_EST_MINS=$(awk -v total="$TOTAL_EST_MINS" -v jobs="$CONCURRENT_JOBS" 'BEGIN {printf "%.0f", (total / jobs) + 0.5}') # Round up
+    PARALLEL_EST_MINS=$(awk -v total="$TOTAL_EST_MINS" -v jobs="$CONCURRENT_JOBS" 'BEGIN {printf "%.0f", (total / jobs) + 0.5}') # Round up
 else
-    echo "WARNING: No valid tables or CONCURRENT_JOBS=0, setting TOTAL_EST_MINS to 0" >> $SUMMARY_LOG
-    TOTAL_EST_MINS=0
+    echo "WARNING: No valid tables or CONCURRENT_JOBS=0, setting PARALLEL_EST_MINS to 0" >> $SUMMARY_LOG
+    PARALLEL_EST_MINS=0
 fi
+
 # Add fixed estimate for db2rbind
 DB2RBIND_EST_MINS=5
-TOTAL_EST_MINS=$((TOTAL_EST_MINS + DB2RBIND_EST_MINS))
+FINAL_EST_MINS=$((PARALLEL_EST_MINS + DB2RBIND_EST_MINS))
 
-TOTAL_EST_HRS=$(awk -v mins="$TOTAL_EST_MINS" 'BEGIN {printf "%.1f", mins / 60}')
-echo "Total estimated time (including db2rbind, considering concurrency): $TOTAL_EST_MINS minutes ($TOTAL_EST_HRS hours)" >> $SUMMARY_LOG
+# Fixed: Use a more reliable calculation for hours from minutes
+TOTAL_EST_HRS=$(awk -v mins="$FINAL_EST_MINS" 'BEGIN {printf "%.1f", mins / 60}')
+echo "Total estimated time for all tables (without concurrency): $TOTAL_EST_MINS minutes" >> $SUMMARY_LOG
+echo "Total estimated time with concurrency of $CONCURRENT_JOBS jobs: $PARALLEL_EST_MINS minutes" >> $SUMMARY_LOG
+echo "Total estimated time (including db2rbind, considering concurrency): $FINAL_EST_MINS minutes ($TOTAL_EST_HRS hours)" >> $SUMMARY_LOG
 
-if [ $(awk -v hrs="$TOTAL_EST_HRS" 'BEGIN {print (hrs > 4) ? 1 : 0}') -eq 1 ]; then
+# Fixed: Ensure we have a numeric comparison with a valid number
+if [ -n "$TOTAL_EST_HRS" ] && [ $(awk -v hrs="$TOTAL_EST_HRS" 'BEGIN {print (hrs > 4.0) ? 1 : 0}') -eq 1 ]; then
     echo "WARNING: Estimated time exceeds 4-hour window!" >> $SUMMARY_LOG
 fi
 
@@ -326,8 +331,8 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     INDEX_SIZE_GB=$4
 
     # Re-validate/sanitize sizes just before launching the job
-    if ! echo "$TABLE_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then TABLE_SIZE_GB="0.01"; fi
-    if ! echo "$INDEX_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then INDEX_SIZE_GB="0.01"; fi
+    if [ -z "$TABLE_SIZE_GB" ] || ! echo "$TABLE_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then TABLE_SIZE_GB="0.01"; fi
+    if [ -z "$INDEX_SIZE_GB" ] || ! echo "$INDEX_SIZE_GB" | grep -qE '^[0-9]+(\.[0-9]+)?$'; then INDEX_SIZE_GB="0.01"; fi
     SANITIZED_TABLE_SIZE_GB=$(awk -v size="$TABLE_SIZE_GB" 'BEGIN {printf "%.2f", size + 0}')
     SANITIZED_INDEX_SIZE_GB=$(awk -v size="$INDEX_SIZE_GB" 'BEGIN {printf "%.2f", size + 0}')
 
