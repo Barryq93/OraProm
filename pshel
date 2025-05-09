@@ -2,10 +2,10 @@ SELECT
     d.*, 
     ds.*, 
     dt.*,
-    da.attr1_row1, da.attr1_row2,
-    da.attr2_row1, da.attr2_row2,
-    da.attr3_row1, da.attr3_row2,
-    da.attr4_row1, da.attr4_row2
+    da.documenttypeid_row1, da.documenttypeid_row2,
+    da.indextypeid_row1, da.indextypeid_row2,
+    da.value_row1, da.value_row2,
+    da.linkid_row1, da.linkid_row2
 FROM 
     document d
 JOIN 
@@ -17,19 +17,19 @@ LEFT JOIN (
     FROM (
         SELECT 
             docid,
-            attr1,
-            attr2,
-            attr3,
-            attr4,
-            ROW_NUMBER() OVER (PARTITION BY docid ORDER BY attr1) AS rn
+            documenttypeid,
+            indextypeid,
+            value,
+            linkid,
+            ROW_NUMBER() OVER (PARTITION BY docid ORDER BY documenttypeid) AS rn
         FROM 
             documentattributes
     )
     PIVOT (
-        MAX(attr1) AS attr1, 
-        MAX(attr2) AS attr2, 
-        MAX(attr3) AS attr3, 
-        MAX(attr4) AS attr4
+        MAX(documenttypeid) AS documenttypeid, 
+        MAX(indextypeid) AS indextypeid, 
+        MAX(value) AS value, 
+        MAX(linkid) AS linkid
         FOR rn IN (1 AS row1, 2 AS row2)
     )
 ) da ON d.docid = da.docid;
