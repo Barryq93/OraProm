@@ -2,10 +2,14 @@ SELECT
     d.*, 
     ds.*, 
     dt.*,
-    da.documenttypeid_row1, da.documenttypeid_row2,
-    da.indextypeid_row1, da.indextypeid_row2,
-    da.value_row1, da.value_row2,
-    da.linkid_row1, da.linkid_row2
+    MAX(CASE WHEN da.rn = 1 THEN da.documenttypeid END) AS documenttypeid_row1,
+    MAX(CASE WHEN da.rn = 2 THEN da.documenttypeid END) AS documenttypeid_row2,
+    MAX(CASE WHEN da.rn = 1 THEN da.indextypeid END) AS indextypeid_row1,
+    MAX(CASE WHEN da.rn = 2 THEN da.indextypeid END) AS indextypeid_row2,
+    MAX(CASE WHEN da.rn = 1 THEN da.value END) AS value_row1,
+    MAX(CASE WHEN da.rn = 2 THEN da.value END) AS value_row2,
+    MAX(CASE WHEN da.rn = 1 THEN da.linkid END) AS linkid_row1,
+    MAX(CASE WHEN da.rn = 2 THEN da.linkid END) AS linkid_row2
 FROM 
     document d
 JOIN 
@@ -13,23 +17,17 @@ JOIN
 JOIN 
     DocumentType dt ON dt.DocumentTypeID = d.DocumentTypeID
 LEFT JOIN (
-    SELECT *
-    FROM (
-        SELECT 
-            docid,
-            documenttypeid,
-            indextypeid,
-            value,
-            linkid,
-            ROW_NUMBER() OVER (PARTITION BY docid ORDER BY documenttypeid) AS rn
-        FROM 
-            documentattributes
-    )
-    PIVOT (
-        MAX(documenttypeid) AS documenttypeid, 
-        MAX(indextypeid) AS indextypeid, 
-        MAX(value) AS value, 
-        MAX(linkid) AS linkid
-        FOR rn IN (1 AS row1, 2 AS row2)
-    )
-) da ON d.docid = da.docid;
+    SELECT 
+        docid,
+        documenttypeid,
+        indextypeid,
+        value,
+        linkid,
+        ROW_NUMBER() OVER (PARTITION BY docid ORDER BY documenttypeid) AS rn
+    FROM 
+        documentattributes
+) da ON d.docid = da.docid
+GROUP BY 
+    d.docid, d.DocumentTypeID, d.name,  -- List all document columns
+    ds.documentID, ds.ds_col,           -- List all documents columns
+    dt.DocumentTypeID, dt.dt_col;       -- List all DocumentType columns
