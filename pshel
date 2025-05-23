@@ -1,13 +1,17 @@
-(
-  index=your_index http_call=your_call_name earliest=@d latest=now()
-  | bin _time span=1h
-  | stats count as current_count by _time
-)
-| append [
-  search index=your_index http_call=your_call_name earliest=-7d@d latest=-7d@d+now()
-  | eval _time = _time + 7*24*60*60
-  | bin _time span=1h
-  | stats count as previous_week_count by _time
-]
-| stats values(current_count) as current_count values(previous_week_count) as previous_week_count by _time
-| timechart span=1h max(current_count) as "Today", max(previous_week_count) as "Same time last week"
+| makeresults
+| eval now=now(), seconds_since_midnight=now - relative_time(now, "@d")
+| eval earliest_last_week=strftime(relative_time(now, "-7d@d"), "%s")
+| eval latest_last_week=earliest_last_week + seconds_since_midnight
+| map search="
+    search index=your_index http_call=your_call_name earliest=@d latest=now()
+    | bin _time span=1h
+    | stats count as current_count by _time
+    | append [
+        search index=your_index http_call=your_call_name earliest=$earliest_last_week$ latest=$latest_last_week$
+        | eval _time = _time + 7*24*60*60
+        | bin _time span=1h
+        | stats count as previous_week_count by _time
+    ]
+    | stats values(current_count) as current_count values(previous_week_count) as previous_week_count by _time
+    | timechart span=1h max(current_count) as \"Today\", max(previous_week_count) as \"Same time last week\"
+"
