@@ -4,12 +4,12 @@ index=your_index http_call=your_call_name earliest=@d latest=now()
 | stats count as current_count by hour_of_day, _time
 | append [
     search index=your_index http_call=your_call_name 
-    [| eval earliest_last_week=relative_time(now(), "-7d@d")
+    [| eval start_last_week=relative_time(now(), "-7d@d")
      | eval seconds_since_midnight=now() - relative_time(now(), "@d")
-     | eval latest_last_week=earliest_last_week + seconds_since_midnight
-     | eval earliest_last_week=strftime(earliest_last_week, "%s")
-     | eval latest_last_week=strftime(latest_last_week, "%s")
-     | return earliest=$earliest_last_week$ latest=$latest_last_week$]
+     | eval end_last_week=start_last_week + seconds_since_midnight
+     | eval start_last_week=strftime(start_last_week, "%s")
+     | eval end_last_week=strftime(end_last_week, "%s")
+     | return earliest=$start_last_week$ latest=$end_last_week$]
     | bin _time span=1h
     | eval hour_of_day=strftime(_time, "%H")
     | stats count as previous_week_count by hour_of_day
