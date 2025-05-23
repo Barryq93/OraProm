@@ -1,33 +1,13 @@
-SELECT 
-    d.*, 
-    ds.*, 
-    dt.*,
-    MAX(CASE WHEN da.rn = 1 THEN da.documenttypeid END) AS documenttypeid_row1,
-    MAX(CASE WHEN da.rn = 2 THEN da.documenttypeid END) AS documenttypeid_row2,
-    MAX(CASE WHEN da.rn = 1 THEN da.indextypeid END) AS indextypeid_row1,
-    MAX(CASE WHEN da.rn = 2 THEN da.indextypeid END) AS indextypeid_row2,
-    MAX(CASE WHEN da.rn = 1 THEN da.value END) AS value_row1,
-    MAX(CASE WHEN da.rn = 2 THEN da.value END) AS value_row2,
-    MAX(CASE WHEN da.rn = 1 THEN da.linkid END) AS linkid_row1,
-    MAX(CASE WHEN da.rn = 2 THEN da.linkid END) AS linkid_row2
-FROM 
-    document d
-JOIN 
-    documents ds ON d.docid = ds.documentID
-JOIN 
-    DocumentType dt ON dt.DocumentTypeID = d.DocumentTypeID
-LEFT JOIN (
-    SELECT 
-        docid,
-        documenttypeid,
-        indextypeid,
-        value,
-        linkid,
-        ROW_NUMBER() OVER (PARTITION BY docid ORDER BY documenttypeid) AS rn
-    FROM 
-        documentattributes
-) da ON d.docid = da.docid
-GROUP BY 
-    d.docid, d.DocumentTypeID, d.name,  -- List all document columns
-    ds.documentID, ds.ds_col,           -- List all documents columns
-    dt.DocumentTypeID, dt.dt_col;       -- List all DocumentType columns
+(
+  index=your_index http_call=your_call_name earliest=@d latest=now()
+  | bin _time span=1h
+  | stats count as current_count by _time
+)
+| append [
+  search index=your_index http_call=your_call_name earliest=-7d@d latest=-7d@d+now()
+  | eval _time = _time + 7*24*60*60
+  | bin _time span=1h
+  | stats count as previous_week_count by _time
+]
+| stats values(current_count) as current_count values(previous_week_count) as previous_week_count by _time
+| timechart span=1h max(current_count) as "Today", max(previous_week_count) as "Same time last week"
