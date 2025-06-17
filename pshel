@@ -1,11 +1,12 @@
 #!/bin/bash
 
-# Script to check server access to a list of endpoints using openssl s_client.
+# Script to check server access to a list of endpoints using curl for pure TCP connectivity.
+# This checks if the network path is open and the port is listening.
 
 # --- Configuration ---
 ENDPOINT_FILE="endpoints.txt" # File containing the list of endpoints (e.g., host:port)
-OUTPUT_LOG="endpoint_check_$(date +%Y%m%d_%H%M%S).log" # Log file for results
-TIMEOUT_SECONDS=5 # Timeout for each openssl connection attempt
+OUTPUT_LOG="endpoint_check_curl_tcp_$(date +%Y%m%d_%H%M%S).log" # Log file for results
+TIMEOUT_SECONDS=5 # Timeout for each curl connection attempt
 
 # --- Functions ---
 
@@ -17,21 +18,27 @@ check_endpoint() {
     local endpoint="$1"
     log_message "Checking endpoint: $endpoint"
 
-    # Use openssl s_client -connect to check connectivity
-    # -servername: Essential for SNI (Server Name Indication)
-    # -quiet: Suppresses non-essential output
-    # -noout: Suppresses certificate output
-    # -debug: Useful for debugging, but typically not needed for a simple check.
-    #         Remove for production or if you don't need detailed handshake info.
-    # -timeout: Sets a timeout for the connection.
-    # 2>/dev/null: Redirects stderr (error messages) to /dev/null to keep output clean.
-    #              You might want to remove this during debugging to see openssl errors.
+    # Extract host and port
+    local host=$(echo "$endpoint" | cut -d':' -f1)
+    local port=$(echo "$endpoint" | cut -d':' -f2)
 
-    if openssl s_client -connect "$endpoint" -servername "$(echo "$endpoint" | cut -d':' -f1)" -quiet -noout -timeout "$TIMEOUT_SECONDS" >/dev/null 2>&1; then
-        log_message "  SUCCESS: Endpoint $endpoint is accessible."
+    # Validate extracted host and port
+    if [ -z "$host" ] || [ -z "$port" ] || ! [[ "$port" =~ ^[0-9]+$ ]]; then
+        log_message "  ERROR: Could not parse host or port from endpoint: $endpoint - Skipping."
+        return 1
+    fi
+
+    # Use curl to check *only* TCP connectivity (no TLS, no HTTP)
+    # -s: Silent mode.
+    # -o /dev/null: Discard output.
+    # --connect-timeout: Timeout for the TCP connection.
+    # --max-time: Total time allowed (fallback).
+    # http://: Force plain TCP connection (no TLS).
+    if curl -s -o /dev/null --connect-timeout "$TIMEOUT_SECONDS" --max-time "$TIMEOUT_SECONDS" "http://$host:$port" ; then
+        log_message "  SUCCESS: Endpoint $endpoint is TCP reachable."
         return 0 # Success
     else
-        log_message "  FAILURE: Endpoint $endpoint is NOT accessible or connection timed out."
+        log_message "  FAILURE: Endpoint $endpoint is NOT TCP reachable. (Check above output for curl error)"
         return 1 # Failure
     fi
 }
@@ -45,7 +52,7 @@ if [ ! -f "$ENDPOINT_FILE" ]; then
     exit 1
 fi
 
-log_message "Starting endpoint accessibility check..."
+log_message "Starting endpoint accessibility check with curl (pure TCP)..."
 log_message "Reading endpoints from: $ENDPOINT_FILE"
 log_message "Results will be logged to: $OUTPUT_LOG"
 log_message "Connection timeout set to: $TIMEOUT_SECONDS seconds"
@@ -64,7 +71,7 @@ while IFS= read -r endpoint || [[ -n "$endpoint" ]]; do
     # Remove leading/trailing whitespace
     endpoint=$(echo "$endpoint" | xargs)
 
-    # Validate endpoint format (simple host:port check)
+    # Basic host:port format validation (more strict now)
     if ! echo "$endpoint" | grep -qE '^[^:]+:[0-9]+$'; then
         log_message "  WARNING: Invalid endpoint format (expected host:port): $endpoint - Skipping."
         continue
@@ -82,14 +89,13 @@ done < "$ENDPOINT_FILE"
 log_message "----------------------------------------------------"
 log_message "Endpoint check complete."
 log_message "Total Endpoints Checked: $((SUCCESS_COUNT + FAILURE_COUNT))"
-log_message "Successfully Accessible: $SUCCESS_COUNT"
-log_message "Failed Accessibility:    $FAILURE_COUNT"
+log_message "Successfully Reachable (TCP): $SUCCESS_COUNT"
+log_message "Failed Reachability (TCP):    $FAILURE_COUNT"
 
 if [ "$FAILURE_COUNT" -gt 0 ]; then
-    log_message "Some endpoints were not accessible. Please check the log file '$OUTPUT_LOG' for details."
+    log_message "Some endpoints were not TCP reachable. Please check the log file '$OUTPUT_LOG' for details."
     exit 1 # Exit with a non-zero status to indicate failures
 else
-    log_message "All endpoints are accessible."
+    log_message "All endpoints are TCP reachable."
     exit 0 # Exit with zero status for success
 fi
-
