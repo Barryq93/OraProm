@@ -1,14 +1,15 @@
 SELECT
-    itemID,
-    MIN(createts) AS first_version_timestamp,
-    MAX(lastchangedts) AS latest_version_timestamp,
-    -- Total seconds difference
-    TIMESTAMPDIFF(2, CHAR(MAX(lastchangedts) - MIN(createts))) AS seconds_difference,
-    -- Formatted as HH:MM:SS
-    LPAD(FLOOR(TIMESTAMPDIFF(2, CHAR(MAX(lastchangedts) - MIN(createts))) / 3600), 2, '0') || ':' ||
-    LPAD(MOD(FLOOR(TIMESTAMPDIFF(2, CHAR(MAX(lastchangedts) - MIN(createts))) / 60), 60), 2, '0') || ':' ||
-    LPAD(MOD(TIMESTAMPDIFF(2, CHAR(MAX(lastchangedts) - MIN(createts))), 60), 2, '0') AS time_difference_hhmmss
+    SUBSTR(APPL_NAME, 1, 20) AS APPL_NAME,
+    AGENT_ID AS APPL_HANDLE,
+    ELAPSED_TIME_MIN AS ELAPSED_MIN,
+    APPL_STATUS AS STATUS,
+    SUBSTR(AUTHID, 1, 10) AS AUTH_ID,
+    SUBSTR(INBOUND_COMM_ADDRESS, 1, 15) AS IP_ADDRESS,
+    SUBSTR(STMT_TEXT, 1, 100) AS SQL_STATEMENT
 FROM
-    your_table_name
-GROUP BY
-    itemID;
+    SYSIBMADM.LONG_RUNNING_SQL
+WHERE
+    ELAPSED_TIME_MIN > 0 -- Adjust this threshold as needed (e.g., > 5 for transactions running more than 5 minutes)
+ORDER BY
+    ELAPSED_TIME_MIN DESC
+FETCH FIRST 10 ROWS ONLY; -- Adjust to see more or fewer results
