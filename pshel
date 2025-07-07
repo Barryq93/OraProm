@@ -1,1 +1,14 @@
-lsblk -b -d -n -o SIZE | awk '{sum += $1} END {printf "%.2f TB\n", sum/1024/1024/1024/1024}'
+SELECT
+    itemID,
+    MIN(createts) AS first_version_timestamp,
+    MAX(lastchangedts) AS latest_version_timestamp,
+    -- Total seconds difference
+    TIMESTAMPDIFF(2, CHAR(MAX(lastchangedts) - MIN(createts))) AS seconds_difference,
+    -- Formatted as HH:MM:SS
+    LPAD(FLOOR(TIMESTAMPDIFF(2, CHAR(MAX(lastchangedts) - MIN(createts))) / 3600), 2, '0') || ':' ||
+    LPAD(MOD(FLOOR(TIMESTAMPDIFF(2, CHAR(MAX(lastchangedts) - MIN(createts))) / 60), 60), 2, '0') || ':' ||
+    LPAD(MOD(TIMESTAMPDIFF(2, CHAR(MAX(lastchangedts) - MIN(createts))), 60), 2, '0') AS time_difference_hhmmss
+FROM
+    your_table_name
+GROUP BY
+    itemID;
