@@ -1,10 +1,14 @@
-awk -v max=500000 '
-/^INSERT/ {
-  count++;
-  if (count % max == 1) {
-    close(outfile);
-    outfile = sprintf("part_%03d.sql", int(count / max) + 1);
+awk '
+BEGIN { n = 1; fname = sprintf("part_%03d.sql", n) }
+/^[Cc][Oo][Mm][Mm][Ii][T][;]?$/ {  # Matches "COMMIT" or "COMMIT;"
+  c++
+  print >> fname
+  if (c % 25 == 0) {
+    close(fname)
+    n++
+    fname = sprintf("part_%03d.sql", n)
   }
-  print > outfile
+  next
 }
+{ print >> fname }
 ' bigfile.sql
