@@ -1,14 +1,21 @@
-awk '
-BEGIN { n = 1; fname = sprintf("part_%03d.sql", n) }
-/^[Cc][Oo][Mm][Mm][Ii][T][;]?$/ {  # Matches "COMMIT" or "COMMIT;"
-  c++
-  print >> fname
-  if (c % 25 == 0) {
-    close(fname)
-    n++
-    fname = sprintf("part_%03d.sql", n)
-  }
-  next
-}
-{ print >> fname }
-' bigfile.sql
+repo/
+├─ scripts/
+│  └─ Invoke-Monitoring.ps1           # orchestrator (input: -Env)
+├─ components/
+│  ├─ Filesystem/
+│  │  └─ Filesystem.Monitor.psm1      # component runner (reads its own YAML)
+│  ├─ Windows/
+│  ├─ IIS/
+│  ├─ Oracle/
+│  └─ DB2/
+├─ config/
+│  └─ envs/
+│     ├─ prod/
+│     │  ├─ defaults.yml              # optional shared defaults for env
+│     │  ├─ silences.yml              # env-wide silences (or per-component if you prefer)
+│     │  └─ filesystem/               # component owns everything under its folder
+│     │     ├─ zero-size.yml
+│     │     └─ ages.yml
+│     └─ uat/
+│        └─ ...
+└─ logs/
