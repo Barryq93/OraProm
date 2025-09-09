@@ -1,21 +1,20 @@
-repo/
-├─ scripts/
-│  └─ Invoke-Monitoring.ps1           # orchestrator (input: -Env)
-├─ components/
-│  ├─ Filesystem/
-│  │  └─ Filesystem.Monitor.psm1      # component runner (reads its own YAML)
-│  ├─ Windows/
-│  ├─ IIS/
-│  ├─ Oracle/
-│  └─ DB2/
+monitoring/
+├─ modules/
+│  ├─ Monitoring.Core/            # loader, runner, registries, logging, silences, dedupe
+│  ├─ Monitoring.Checks.Files/    # filesystem checks
+│  ├─ Monitoring.Checks.Windows/  # services
+│  ├─ Monitoring.Checks.IIS/
+│  ├─ Monitoring.Checks.Oracle/
+│  ├─ Monitoring.Checks.DB2/
+│  ├─ Monitoring.Notify.Email/
+│  └─ Monitoring.Notify.JavaSink/
 ├─ config/
-│  └─ envs/
-│     ├─ prod/
-│     │  ├─ defaults.yml              # optional shared defaults for env
-│     │  ├─ silences.yml              # env-wide silences (or per-component if you prefer)
-│     │  └─ filesystem/               # component owns everything under its folder
-│     │     ├─ zero-size.yml
-│     │     └─ ages.yml
-│     └─ uat/
-│        └─ ...
-└─ logs/
+│  ├─ defaults.yml                # global timeouts/tags/logging/routes
+│  ├─ silences.yml                # mute rules
+│  └─ monitors/                   # many small files, by team/domain/env
+│     ├─ filesystem.yml
+│     ├─ oracle-prod.yml
+│     └─ windows.yml
+├─ scripts/
+│  └─ Invoke-Monitoring.ps1       # tiny entrypoint
+└─ tests/                         # Pester
