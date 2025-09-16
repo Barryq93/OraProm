@@ -1,20 +1,7 @@
-monitoring/
-├─ modules/
-│  ├─ Monitoring.Core/            # loader, runner, registries, logging, silences, dedupe
-│  ├─ Monitoring.Checks.Files/    # filesystem checks
-│  ├─ Monitoring.Checks.Windows/  # services
-│  ├─ Monitoring.Checks.IIS/
-│  ├─ Monitoring.Checks.Oracle/
-│  ├─ Monitoring.Checks.DB2/
-│  ├─ Monitoring.Notify.Email/
-│  └─ Monitoring.Notify.JavaSink/
-├─ config/
-│  ├─ defaults.yml                # global timeouts/tags/logging/routes
-│  ├─ silences.yml                # mute rules
-│  └─ monitors/                   # many small files, by team/domain/env
-│     ├─ filesystem.yml
-│     ├─ oracle-prod.yml
-│     └─ windows.yml
-├─ scripts/
-│  └─ Invoke-Monitoring.ps1       # tiny entrypoint
-└─ tests/                         # Pester
+SELECT 
+    your_date_column,
+    DATE( (YEAR(your_date_column) + 2000 - 0) || '-' ||
+          LPAD(MONTH(your_date_column),2,'0') || '-' ||
+          LPAD(DAY(your_date_column),2,'0') ) AS fixed_date
+FROM your_table
+WHERE YEAR(your_date_column) < 1900;
