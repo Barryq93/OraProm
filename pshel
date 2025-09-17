@@ -1,12 +1,17 @@
 # --- Configuration ---
 $inputFile = "C:\path\to\your\records.txt"
-$outputFile = "C:\path\to\your\output.sql"
+$outputDir = "C:\path\to\your\output_sql_files"
 $chunkSize = 5000
 $tableName = "your_table"
 $columnName = "your_column_name"
 
 # --- Main Script ---
 try {
+    # Create the output directory if it doesn't exist
+    if (-not (Test-Path -Path $outputDir)) {
+        New-Item -Path $outputDir -ItemType Directory | Out-Null
+    }
+
     # Read all lines from the input file
     $records = Get-Content -Path $inputFile
 
@@ -14,39 +19,37 @@ try {
     $totalRecords = $records.Count
     Write-Host "Found $totalRecords records in the file."
 
-    # Clear the output file to start fresh
-    Clear-Content -Path $outputFile
-
     # Loop through the records in chunks
     for ($i = 0; $i -lt $totalRecords; $i += $chunkSize) {
         # Get the current chunk of records using a sub-array
-        # This is the key correction.
         $chunk = $records[$i..($i + $chunkSize - 1)]
 
-        # Format the values for the SQL IN clause (e.g., 'value1', 'value2')
-        # This will wrap each value in single quotes
+        # Format the values for the SQL IN clause
         $formattedValues = $chunk | ForEach-Object { "'$_'" }
         $sqlList = $formattedValues -join ",`r`n"
 
-        # Construct the full SQL query
+        # Calculate chunk numbers for the filename and comments
         $chunkNumber = ($i / $chunkSize) + 1
         $totalChunks = [math]::Ceiling($totalRecords / $chunkSize)
-        
+
+        # Construct the full SQL query
         $sqlQuery = @"
--- Chunk $chunkNumber of $totalChunks
+-- File $chunkNumber of $totalChunks
 SELECT *
 FROM $tableName
 WHERE $columnName IN (
 $sqlList
 );
-
 "@
-        # Append the query to the output file
-        Add-Content -Path $outputFile -Value $sqlQuery
-        Write-Host "Appended chunk $chunkNumber to output file."
+        # Define the output file path for this specific chunk
+        $outputFile = Join-Path -Path $outputDir -ChildPath "chunk_$chunkNumber.sql"
+
+        # Write the query to the new file
+        $sqlQuery | Out-File -FilePath $outputFile -Encoding UTF8
+        Write-Host "Created file: '$outputFile'."
     }
 
-    Write-Host "SQL file generation complete. Check '$outputFile'."
+    Write-Host "SQL file generation complete. Check the '$outputDir' directory."
 
 } catch {
     Write-Host "An error occurred: $_"
