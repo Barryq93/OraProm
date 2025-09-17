@@ -1,7 +1,52 @@
-SELECT 
-    your_date_column,
-    DATE( (YEAR(your_date_column) + 2000 - 0) || '-' ||
-          LPAD(MONTH(your_date_column),2,'0') || '-' ||
-          LPAD(DAY(your_date_column),2,'0') ) AS fixed_date
-FROM your_table
-WHERE YEAR(your_date_column) < 1900;
+# --- Configuration ---
+$inputFile = "C:\path\to\your\records.txt"
+$outputFile = "C:\path\to\your\output.sql"
+$chunkSize = 5000
+$tableName = "your_table"
+$columnName = "your_column_name"
+
+# --- Main Script ---
+try {
+    # Read all lines from the input file
+    $records = Get-Content -Path $inputFile
+
+    # Get the total number of records
+    $totalRecords = $records.Count
+    Write-Host "Found $totalRecords records in the file."
+
+    # Remove the output file if it exists to start fresh
+    if (Test-Path $outputFile) {
+        Remove-Item $outputFile
+    }
+
+    # Loop through the records in chunks
+    for ($i = 0; $i -lt $totalRecords; $i += $chunkSize) {
+        # Get the current chunk of records
+        $chunk = $records | Select-Object -Index ($i..($i + $chunkSize - 1))
+
+        # Format the values for the SQL IN clause (e.g., 'value1', 'value2')
+        # This will wrap each value in single quotes
+        $formattedValues = $chunk | ForEach-Object { "'$_'" }
+        $sqlList = $formattedValues -join ",`r`n"
+
+        # Construct the full SQL query
+        $sqlQuery = @"
+-- Chunk from record $((($i/$chunkSize)+1)) of $([math]::Ceiling($totalRecords/$chunkSize))
+SELECT *
+FROM $tableName
+WHERE $columnName IN (
+$sqlList
+);
+GO
+"@
+
+        # Append the query to the output file
+        Add-Content -Path $outputFile -Value $sqlQuery
+        Write-Host "Appended chunk from index $i to output file."
+    }
+
+    Write-Host "SQL file generation complete. Check '$outputFile'."
+
+} catch {
+    Write-Host "An error occurred: $_"
+}
