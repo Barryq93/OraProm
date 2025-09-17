@@ -14,15 +14,14 @@ try {
     $totalRecords = $records.Count
     Write-Host "Found $totalRecords records in the file."
 
-    # Remove the output file if it exists to start fresh
-    if (Test-Path $outputFile) {
-        Remove-Item $outputFile
-    }
+    # Clear the output file to start fresh
+    Clear-Content -Path $outputFile
 
     # Loop through the records in chunks
     for ($i = 0; $i -lt $totalRecords; $i += $chunkSize) {
-        # Get the current chunk of records
-        $chunk = $records | Select-Object -Index ($i..($i + $chunkSize - 1))
+        # Get the current chunk of records using a sub-array
+        # This is the key correction.
+        $chunk = $records[$i..($i + $chunkSize - 1)]
 
         # Format the values for the SQL IN clause (e.g., 'value1', 'value2')
         # This will wrap each value in single quotes
@@ -30,19 +29,21 @@ try {
         $sqlList = $formattedValues -join ",`r`n"
 
         # Construct the full SQL query
+        $chunkNumber = ($i / $chunkSize) + 1
+        $totalChunks = [math]::Ceiling($totalRecords / $chunkSize)
+        
         $sqlQuery = @"
--- Chunk from record $((($i/$chunkSize)+1)) of $([math]::Ceiling($totalRecords/$chunkSize))
+-- Chunk $chunkNumber of $totalChunks
 SELECT *
 FROM $tableName
 WHERE $columnName IN (
 $sqlList
 );
-GO
-"@
 
+"@
         # Append the query to the output file
         Add-Content -Path $outputFile -Value $sqlQuery
-        Write-Host "Appended chunk from index $i to output file."
+        Write-Host "Appended chunk $chunkNumber to output file."
     }
 
     Write-Host "SQL file generation complete. Check '$outputFile'."
