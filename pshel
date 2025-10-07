@@ -1,56 +1,25 @@
-# --- Configuration ---
-$inputFile = "C:\path\to\your\records.txt"
-$outputDir = "C:\path\to\your\output_sql_files"
-$chunkSize = 5000
-$tableName = "your_table"
-$columnName = "your_column_name"
+I have a custom build legacy template management and document generation system that needs to be replaced,
+It's based around libre office, it has a mix of strict templates that have to align with certain patterns, if this option then only these options for example
+Then there are free text templates which are used for drafting letters
 
-# --- Main Script ---
-try {
-    # Create the output directory if it doesn't exist
-    if (-not (Test-Path -Path $outputDir)) {
-        New-Item -Path $outputDir -ItemType Directory | Out-Null
-    }
+All of these are stored against a customer in another legacy system, the goal is to move that storage to IBM ECM, either via restapi calls or through microservices.
 
-    # Read all lines from the input file
-    $records = Get-Content -Path $inputFile
+RBAC is key, we want to limit who can access a template to generate letters
+And to who can create templates also templates need to be version controlled
 
-    # Get the total number of records
-    $totalRecords = $records.Count
-    Write-Host "Found $totalRecords records in the file."
+There also needs to be some level of audit trail of who created what document.
+The system currently has a feature where it can save a document in a draft state and only attached to the customer profile when a final state is applied
 
-    # Loop through the records in chunks
-    for ($i = 0; $i -lt $totalRecords; $i += $chunkSize) {
-        # Get the current chunk of records using a sub-array
-        $chunk = $records[$i..($i + $chunkSize - 1)]
+The document generation piece would also be good if it worked to create batches of documents but this isn't a primary function, just a nice to have
 
-        # Format the values for the SQL IN clause
-        $formattedValues = $chunk | ForEach-Object { "'$_'" }
-        $sqlList = $formattedValues -join ",`r`n"
+There must be some level of customisation possible to reach out to.microservice domains, ie get customer, this will have to have some level of code as we need to use the staffid generating the doc to get a valid jwt from our security services 
 
-        # Calculate chunk numbers for the filename and comments
-        $chunkNumber = ($i / $chunkSize) + 1
-        $totalChunks = [math]::Ceiling($totalRecords / $chunkSize)
+The system must also be able to show a history of documents produced per customer 
 
-        # Construct the full SQL query
-        $sqlQuery = @"
--- File $chunkNumber of $totalChunks
-SELECT *
-FROM $tableName
-WHERE $columnName IN (
-$sqlList
-);
-"@
-        # Define the output file path for this specific chunk
-        $outputFile = Join-Path -Path $outputDir -ChildPath "chunk_$chunkNumber.sql"
+The customs screens like customer locate must be able to filter through different nMes, ie 3 John Smith's 
 
-        # Write the query to the new file
-        $sqlQuery | Out-File -FilePath $outputFile -Encoding UTF8
-        Write-Host "Created file: '$outputFile'."
-    }
+Batch document generation while not key would be nice
 
-    Write-Host "SQL file generation complete. Check the '$outputDir' directory."
+What enterprise products have features that match or come close to this
 
-} catch {
-    Write-Host "An error occurred: $_"
-}
+Also give an idea of an open source alternative that could be built around 
