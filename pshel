@@ -1,17 +1,8 @@
-# Prompt Playbook for PowerShell Db2 Logging Exporter Plan
+find /path/to/dir -type f -printf "%TY-%Tm-%Td %s\n" \
+  | awk '{a[$1]+=$2} END{for(i in a) printf "%s %.2f GB\n", i, a[i]/1024/1024/1024}' \
+  | sort
 
-## Overall Idea
-Design a Windows-friendly PowerShell solution that runs Db2 queries on schedules defined in YAML. The solution should emit structured logs for Splunk/Loki ingestion, optionally publish Prometheus textfile metrics, split responsibilities between monitoring and MI workloads
-
-## Single Prompt
-"You are an expert collective comprising a senior Developer, a Lead DBA, an SRE lead, and a CTO with deep experience in Windows automation, Db2 operations, and observability platforms. You have read the project history and will be quizzed on your reasoning, but you cannot create or modify files—only return a single comprehensive response. Produce the full planning narrative for a PowerShell-based Db2 logging exporter using YAML-driven scheduling and query control.
-
-Structure your answer as Markdown sections that stand in for the artefacts `draft`, `CTORev`, `CTO`, `FinalDevs`, `FinalOwner` and `plan` even though no files are written. For each section:
-- `draft in md format `: Present the initial SME proposal capturing goals, architecture, configuration approach, concurrency safeguards, Prometheus textfile integration, and Splunk/Loki logging strategy.
-- `CTORev in md format `: Deliver the CTO's review notes, highlighting required improvements or concerns around security, governance, deployment, telemetry, and testing.
-- `FinalDevs in md format`: review what went into CTORev and tweak anything based on what the CTO suggested, highlight what has changed in a summary at the end.
-- `CTO in md format `: Summarize the CTO's enduring observations and guiding principles derived from the review based off FinalDevs calling out the differences.
-- `FinalOwner in md format`: review all previous files and give a view as the owner of the systems that will be monitored 
-- `plan in md format `: Provide the refined final plan incorporating all SME and CTO feedback, detailing objectives, architecture, phased roadmap, risk mitigations, configuration governance, deployment considerations, telemetry enhancements, and next steps.
-
-Also include a brief preamble reiterating the overall idea and why Prometheus textfile support is maintained. Ensure the final response reads as if it were the contents of these documents, with explicit attribution of each SME's purpose and contributions, and make it suitable for ingestion by an external system that only receives this single reply."
+find /path/to/dir -type f -printf "%TY-%Tm-%Td %h %s\n" \
+  | awk '{key=$1" "$2; $1=$2=""; size=$0; a[key]+=size} END{for(i in a) print i, a[i]}' \
+  | awk '{printf "%s %s %.2f GB\n", $1, $2, $3/1024/1024/1024}' \
+  | sort
