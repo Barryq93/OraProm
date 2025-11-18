@@ -1,8 +1,6 @@
-find /path/to/dir -type f -printf "%TY-%Tm-%Td %s\n" \
-  | awk '{a[$1]+=$2} END{for(i in a) printf "%s %.2f GB\n", i, a[i]/1024/1024/1024}' \
-  | sort
+find /path/to/dir -type f -newermt yesterday -not -newermt today -printf "%s\n" \
+  | awk '{sum+=$1} END{printf "Yesterday: %.2f GB\n", sum/1024/1024/1024}'
 
-find /path/to/dir -type f -printf "%TY-%Tm-%Td %h %s\n" \
-  | awk '{key=$1" "$2; $1=$2=""; size=$0; a[key]+=size} END{for(i in a) print i, a[i]}' \
-  | awk '{printf "%s %s %.2f GB\n", $1, $2, $3/1024/1024/1024}' \
+find /path/to/dir -type f -newermt yesterday -not -newermt today -printf "%h %s\n" \
+  | awk '{a[$1]+=$2} END{for(d in a) printf "%s %.2f GB\n", d, a[d]/1024/1024/1024}' \
   | sort
