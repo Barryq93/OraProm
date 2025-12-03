@@ -1,1 +1,15 @@
+SELECT missing_id
+FROM (
+    -- generate the full range
+    SELECT (200000 + LEVEL - 1) AS missing_id
+    FROM dual
+    CONNECT BY LEVEL <= (210000 - 200000 + 1)
+)
+WHERE missing_id NOT IN (
+    SELECT batch_id
+    FROM your_table
+    WHERE batch_id BETWEEN 200000 AND 210000
+)
+AND ROWNUM <= 2000
+ORDER BY missing_id;
 
