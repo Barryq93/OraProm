@@ -1,31 +1,31 @@
-WITH used AS (
-    SELECT DISTINCT batch_id,
-           ROW_NUMBER() OVER (ORDER BY batch_id) AS rn
+WITH all_used AS (
+    -- all batch IDs that exist in the table in the range
+    SELECT DISTINCT batch_id
     FROM ECMEVT_BATCH_INFO
-    WHERE TRUNC(operation_date) >= TO_DATE('18-NOV-25','DD-MON-YY')
-      AND batch_id BETWEEN 2000000 AND 2100000
-      AND batch_status IS NULL
+    WHERE batch_id BETWEEN 2000000 AND 2100000
 ),
 unused AS (
-    SELECT not_used,
-           ROW_NUMBER() OVER (ORDER BY not_used) AS rn
+    -- all missing IDs in the range + row number
+    SELECT n AS new_batch,
+           ROW_NUMBER() OVER (ORDER BY n) AS rn
     FROM (
-        SELECT (2000000 + LEVEL - 1) AS not_used
+        SELECT 2000000 + LEVEL - 1 AS n
         FROM dual
         CONNECT BY LEVEL <= (2100000 - 2000000 + 1)
     )
-    WHERE not_used NOT IN (
-        SELECT batch_id
-        FROM ECMEVT_BATCH_INFO
-        WHERE TRUNC(operation_date) >= TO_DATE('18-NOV-25','DD-MON-YY')
-          AND batch_id BETWEEN 2000000 AND 2100000
-          AND batch_status IS NULL
-    )
+    WHERE n NOT IN (SELECT batch_id FROM all_used)
+),
+used AS (
+    -- existing IDs + row number
+    SELECT batch_id AS old_batch,
+           ROW_NUMBER() OVER (ORDER BY batch_id) AS rn
+    FROM all_used
 )
-SELECT 
-    u.batch_id   AS old_batch,
-    n.not_used   AS new_batch
-FROM used u
-JOIN unused n ON u.rn = n.rn
-WHERE n.rn <= 2000
-ORDER BY n.not_used;
+SELECT
+    u.old_batch,
+    n.new_batch
+FROM used  u
+JOIN unused n
+  ON u.rn = n.rn         -- pair by row number
+WHERE n.rn <= 2000       -- first 2k unused
+ORDER BY n.new_batch;
