@@ -1,15 +1,31 @@
-SELECT missing_id
-FROM (
-    -- generate the full range
-    SELECT (200000 + LEVEL - 1) AS missing_id
-    FROM dual
-    CONNECT BY LEVEL <= (210000 - 200000 + 1)
+WITH used AS (
+    SELECT DISTINCT batch_id,
+           ROW_NUMBER() OVER (ORDER BY batch_id) AS rn
+    FROM ECMEVT_BATCH_INFO
+    WHERE TRUNC(operation_date) >= TO_DATE('18-NOV-25','DD-MON-YY')
+      AND batch_id BETWEEN 2000000 AND 2100000
+      AND batch_status IS NULL
+),
+unused AS (
+    SELECT not_used,
+           ROW_NUMBER() OVER (ORDER BY not_used) AS rn
+    FROM (
+        SELECT (2000000 + LEVEL - 1) AS not_used
+        FROM dual
+        CONNECT BY LEVEL <= (2100000 - 2000000 + 1)
+    )
+    WHERE not_used NOT IN (
+        SELECT batch_id
+        FROM ECMEVT_BATCH_INFO
+        WHERE TRUNC(operation_date) >= TO_DATE('18-NOV-25','DD-MON-YY')
+          AND batch_id BETWEEN 2000000 AND 2100000
+          AND batch_status IS NULL
+    )
 )
-WHERE missing_id NOT IN (
-    SELECT batch_id
-    FROM your_table
-    WHERE batch_id BETWEEN 200000 AND 210000
-)
-AND ROWNUM <= 2000
-ORDER BY missing_id;
-
+SELECT 
+    u.batch_id   AS old_batch,
+    n.not_used   AS new_batch
+FROM used u
+JOIN unused n ON u.rn = n.rn
+WHERE n.rn <= 2000
+ORDER BY n.not_used;
