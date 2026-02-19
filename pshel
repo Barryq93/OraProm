@@ -1,57 +1,336 @@
-# Load assemblies (adjust paths as needed)
-Add-Type -Path "path\to\Confluent.Kafka.dll"
-Add-Type -Path "path\to\Confluent.SchemaRegistry.dll"
-Add-Type -Path "path\to\Confluent.SchemaRegistry.Serdes.Avro.dll"
+#Requires -Version 7.0
 
-# Kafka & Schema Registry config
-$bootstrapServers = "localhost:9092"
-$schemaRegistryUrl = "http://localhost:8081"
-$groupId           = "ecm-documents-consumer-group"
-$topic             = "ECMDocuments"
+[CmdletBinding()]
+param(
+    [string]$BootstrapServers  = "broker1:9092,broker2:9092",
+    [string]$SchemaRegistryUrl = "https://schema-registry:8081",
+    [string]$Topic             = "ECMDocuments",
+    [string]$GroupId           = "ecm-documents-consumer-group",
+    [bool]  $SslEnabled        = $true,
+    [string]$CertThumbprint    = "",           # preferred - most reliable
+    [string]$CertSubjectName   = "ecm-consumer", # fallback if no thumbprint
+    [string]$CaLocation        = "C:\certs\ca.pem",
+    [string]$SaslUsername      = $env:KAFKA_SASL_USERNAME,
+    [string]$SaslPassword      = $env:KAFKA_SASL_PASSWORD
+)
 
-# Schema Registry client
-$srConfig = [Confluent.SchemaRegistry.SchemaRegistryConfig]::new()
-$srConfig.Url = $schemaRegistryUrl
-$schemaRegistryClient = [Confluent.SchemaRegistry.CachedSchemaRegistryClient]::new($srConfig)
+#region Assemblies
+Add-Type -Path ".\lib\Confluent.Kafka.dll"
+Add-Type -Path ".\lib\Confluent.SchemaRegistry.dll"
+Add-Type -Path ".\lib\Confluent.SchemaRegistry.Serdes.Avro.dll"
+#endregion
 
-# Consumer config
-$consumerConfig = [Confluent.Kafka.ConsumerConfig]::new()
-$consumerConfig.BootstrapServers  = $bootstrapServers
-$consumerConfig.GroupId           = $groupId
-$consumerConfig.AutoOffsetReset   = [Confluent.Kafka.AutoOffsetReset]::Earliest
-$consumerConfig.EnableAutoCommit  = $true
+#region Logging
+function Write-Log {
+    param(
+        [string]$Message,
+        [ValidateSet("INFO","WARN","ERROR")]
+        [string]$Level = "INFO"
+    )
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $entry = [PSCustomObject]@{
+        timestamp = $timestamp
+        level     = $Level
+        message   = $Message
+    }
+    $json = $entry | ConvertTo-Json -Compress
+    switch ($Level) {
+        "ERROR" { Write-Error $json }
+        "WARN"  { Write-Warning $json }
+        default { Write-Host $json }
+    }
+}
+#endregion
 
-# Build consumer with Avro deserializer (GenericRecord for dynamic Avro schemas)
-$consumerBuilder = [Confluent.Kafka.ConsumerBuilder[
-    Confluent.Kafka.Ignore,
-    Avro.Generic.GenericRecord
-]]::new($consumerConfig)
+#region Certificate Handling
+function Get-VMCertificate {
+    param(
+        [string]$Thumbprint,
+        [string]$SubjectName
+    )
 
-$avroDeserializer = [Confluent.SchemaRegistry.Serdes.AvroDeserializer[Avro.Generic.GenericRecord]]::new($schemaRegistryClient, $null)
-$consumerBuilder.SetValueDeserializer($avroDeserializer.AsSyncOverAsync())
+    Write-Log "Loading certificate from Windows Certificate Store (LocalMachine\My)"
 
-$consumer = $consumerBuilder.Build()
-$consumer.Subscribe($topic)
+    $store = [System.Security.Cryptography.X509Certificates.X509Store]::new(
+        [System.Security.Cryptography.X509Certificates.StoreName]::My,
+        [System.Security.Cryptography.X509Certificates.StoreLocation]::LocalMachine
+    )
 
-Write-Host "Consuming from topic: $topic ..."
+    try {
+        $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly)
 
-try {
-    while ($true) {
-        $result = $consumer.Consume([System.TimeSpan]::FromSeconds(5))
+        $cert = if ($Thumbprint) {
+            Write-Log "Searching by thumbprint: $Thumbprint"
+            $store.Certificates | Where-Object { $_.Thumbprint -eq $Thumbprint } | Select-Object -First 1
+        } else {
+            Write-Log "Searching by subject name: $SubjectName"
+            $store.Certificates | Where-Object { $_.Subject -like "*$SubjectName*" } | Select-Object -First 1
+        }
 
-        if ($null -ne $result) {
-            Write-Host "Offset: $($result.Offset) | Partition: $($result.Partition)"
+        if (-not $cert) {
+            throw "Certificate not found in LocalMachine\My store. Thumbprint='$Thumbprint' Subject='$SubjectName'"
+        }
 
-            # Access Avro fields dynamically
-            $record = $result.Message.Value
-            foreach ($field in $record.Schema.Fields) {
-                Write-Host "  $($field.Name): $($record[$field.Name])"
-            }
+        return $cert
+    }
+    finally {
+        $store.Close()
+    }
+}
+
+function Test-CertificateValidity {
+    param([System.Security.Cryptography.X509Certificates.X509Certificate2]$Cert)
+
+    $now = Get-Date
+
+    Write-Log "Certificate details — Subject: $($Cert.Subject) | Thumbprint: $($Cert.Thumbprint)"
+    Write-Log "Certificate validity — NotBefore: $($Cert.NotBefore) | NotAfter: $($Cert.NotAfter)"
+
+    if ($now -lt $Cert.NotBefore) {
+        throw "Certificate is not yet valid. Valid from: $($Cert.NotBefore)"
+    }
+
+    if ($now -gt $Cert.NotAfter) {
+        throw "Certificate has EXPIRED. Expired on: $($Cert.NotAfter)"
+    }
+
+    # Warn if expiring within 30 days
+    $daysRemaining = ($Cert.NotAfter - $now).Days
+    if ($daysRemaining -le 30) {
+        Write-Log "WARNING: Certificate expires in $daysRemaining day(s) on $($Cert.NotAfter)" -Level WARN
+    } else {
+        Write-Log "Certificate is valid. Expires in $daysRemaining day(s)"
+    }
+}
+
+function Export-CertificateToTempFiles {
+    param([System.Security.Cryptography.X509Certificates.X509Certificate2]$Cert)
+
+    $tempDir  = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), [System.Guid]::NewGuid().ToString())
+    [System.IO.Directory]::CreateDirectory($tempDir) | Out-Null
+
+    $certPath = [System.IO.Path]::Combine($tempDir, "client-cert.pem")
+    $keyPath  = [System.IO.Path]::Combine($tempDir, "client-key.pem")
+    $p12Path  = [System.IO.Path]::Combine($tempDir, "client.p12")
+
+    try {
+        # Export to PKCS12 first
+        $tempPassword = [System.Guid]::NewGuid().ToString()
+        $pkcs12Bytes  = $Cert.Export(
+            [System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12,
+            $tempPassword
+        )
+        [System.IO.File]::WriteAllBytes($p12Path, $pkcs12Bytes)
+
+        # Extract cert and key via openssl
+        & openssl pkcs12 -in $p12Path -nokeys -out $certPath -passin "pass:$tempPassword" 2>$null
+        & openssl pkcs12 -in $p12Path -nocerts -nodes -out $keyPath -passin "pass:$tempPassword" 2>$null
+
+        if (-not (Test-Path $certPath) -or -not (Test-Path $keyPath)) {
+            throw "Failed to extract cert/key via openssl. Is openssl available on PATH?"
+        }
+
+        Write-Log "Certificate exported to temp files successfully"
+
+        return @{
+            CertPath = $certPath
+            KeyPath  = $keyPath
+            P12Path  = $p12Path
+            TempDir  = $tempDir
         }
     }
-} catch [System.OperationCanceledException] {
-    Write-Host "Consumer cancelled."
-} finally {
-    $consumer.Close()
-    $consumer.Dispose()
+    catch {
+        # Clean up on failure
+        Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        throw
+    }
 }
+
+function Remove-TempCertFiles {
+    param([hashtable]$Paths)
+    if ($Paths -and $Paths.TempDir) {
+        Remove-Item $Paths.TempDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Log "Temporary certificate files cleaned up"
+    }
+}
+#endregion
+
+#region Consumer Configuration
+function New-ConsumerConfig {
+    param(
+        [bool]    $SslEnabled,
+        [hashtable]$CertPaths
+    )
+
+    $config = [Confluent.Kafka.ConsumerConfig]::new()
+    $config.BootstrapServers = $BootstrapServers
+    $config.GroupId          = $GroupId
+    $config.AutoOffsetReset  = [Confluent.Kafka.AutoOffsetReset]::Earliest
+    $config.EnableAutoCommit = $false
+
+    if ($SslEnabled) {
+        Write-Log "Configuring consumer with SSL enabled"
+        $config.SecurityProtocol       = [Confluent.Kafka.SecurityProtocol]::SaslSsl
+        $config.SaslMechanism          = [Confluent.Kafka.SaslMechanism]::ScramSha256
+        $config.SaslUsername           = $SaslUsername
+        $config.SaslPassword           = $SaslPassword
+        $config.SslCaLocation          = $CaLocation
+        $config.SslCertificateLocation = $CertPaths.CertPath
+        $config.SslKeyLocation         = $CertPaths.KeyPath
+    } else {
+        Write-Log "SSL disabled — connecting in plaintext" -Level WARN
+        $config.SecurityProtocol = [Confluent.Kafka.SecurityProtocol]::Plaintext
+    }
+
+    return $config
+}
+
+function New-SchemaRegistryConfig {
+    param([bool]$SslEnabled)
+
+    $srConfig = [Confluent.SchemaRegistry.SchemaRegistryConfig]::new()
+    $srConfig.Url = $SchemaRegistryUrl
+
+    if ($SslEnabled) {
+        $srConfig.SslCaLocation  = $CaLocation
+        $srConfig.BasicAuthUserInfo = "$($SaslUsername):$($SaslPassword)"
+    }
+
+    return $srConfig
+}
+#endregion
+
+#region Message Processing
+function Invoke-ProcessMessage {
+    param([Avro.Generic.GenericRecord]$Record)
+
+    # Replace this with your actual ECMDocuments processing logic
+    $fields = @{}
+    foreach ($field in $Record.Schema.Fields) {
+        $fields[$field.Name] = $Record[$field.Name]
+    }
+
+    Write-Log "Processing ECMDocument: $(($fields | ConvertTo-Json -Compress))"
+
+    # e.g. write to DB, call API, etc.
+}
+#endregion
+
+#region Main
+$tempCertPaths = $null
+$consumer      = $null
+$cts           = [System.Threading.CancellationTokenSource]::new()
+
+# Graceful shutdown on CTRL+C
+[Console]::CancelKeyPress += {
+    param($sender, $e)
+    $e.Cancel = $true
+    Write-Log "Shutdown signal received..."
+    $cts.Cancel()
+}
+
+try {
+    # --- Certificate handling (only needed if SSL enabled) ---
+    if ($SslEnabled) {
+        $cert = Get-VMCertificate -Thumbprint $CertThumbprint -SubjectName $CertSubjectName
+        Test-CertificateValidity -Cert $cert
+        $tempCertPaths = Export-CertificateToTempFiles -Cert $cert
+    }
+
+    # --- Build consumer ---
+    $consumerConfig      = New-ConsumerConfig -SslEnabled $SslEnabled -CertPaths $tempCertPaths
+    $srConfig            = New-SchemaRegistryConfig -SslEnabled $SslEnabled
+    $schemaRegistryClient = [Confluent.SchemaRegistry.CachedSchemaRegistryClient]::new($srConfig)
+
+    $consumerBuilder = [Confluent.Kafka.ConsumerBuilder[
+        Confluent.Kafka.Ignore,
+        Avro.Generic.GenericRecord
+    ]]::new($consumerConfig)
+
+    $avroDeserializer = [Confluent.SchemaRegistry.Serdes.AvroDeserializer[Avro.Generic.GenericRecord]]::new(
+        $schemaRegistryClient, $null
+    )
+    $consumerBuilder.SetValueDeserializer($avroDeserializer.AsSyncOverAsync())
+
+    $consumerBuilder.SetErrorHandler({
+        param($_, $error)
+        Write-Log "Kafka error: [$($error.Code)] $($error.Reason)" -Level ($error.IsFatal ? "ERROR" : "WARN")
+    })
+
+    $consumerBuilder.SetPartitionsAssignedHandler({
+        param($_, $partitions)
+        Write-Log "Partitions assigned: $($partitions | ForEach-Object { $_.Partition.Value } | Join-String -Separator ', ')"
+    })
+
+    $consumerBuilder.SetPartitionsRevokedHandler({
+        param($c, $partitions)
+        Write-Log "Partitions revoked — committing offsets"
+        try { $c.Commit() } catch { Write-Log "Commit on revoke failed: $_" -Level WARN }
+    })
+
+    $consumer = $consumerBuilder.Build()
+    $consumer.Subscribe($Topic)
+    Write-Log "Subscribed to topic: $Topic"
+
+    # --- Consume loop ---
+    $maxRetries  = 3
+    $retryCount  = 0
+
+    while (-not $cts.Token.IsCancellationRequested) {
+        try {
+            $result = $consumer.Consume($cts.Token)
+
+            if ($null -eq $result) { continue }
+
+            try {
+                Invoke-ProcessMessage -Record $result.Message.Value
+                $consumer.Commit($result)
+                $retryCount = 0
+            }
+            catch {
+                $retryCount++
+                Write-Log "Processing failed (attempt $retryCount/$maxRetries): $_" -Level WARN
+
+                if ($retryCount -ge $maxRetries) {
+                    Write-Log "Max retries reached — sending to DLQ" -Level ERROR
+                    # TODO: produce to ECMDocuments.DLQ
+                    $consumer.Commit($result)
+                    $retryCount = 0
+                }
+            }
+        }
+        catch [Confluent.Kafka.ConsumeException] {
+            $err = $_.Exception.Error
+            if ($err.Code -eq [Confluent.Kafka.ErrorCode]::TopicAuthorizationFailed) {
+                Write-Log "ACL denied — check principal has READ on topic and consumer group" -Level ERROR
+                throw
+            }
+            if ($err.IsFatal) {
+                Write-Log "Fatal Kafka error: $($err.Reason)" -Level ERROR
+                throw
+            }
+            Write-Log "Retriable Kafka error: $($err.Reason)" -Level WARN
+        }
+        catch [System.OperationCanceledException] {
+            break
+        }
+    }
+}
+catch {
+    Write-Log "Consumer failed: $_" -Level ERROR
+    exit 1
+}
+finally {
+    Write-Log "Shutting down..."
+    try { $consumer.Close() } catch {}
+    try { $consumer.Dispose() } catch {}
+    Remove-TempCertFiles -Paths $tempCertPaths
+    Write-Log "Shutdown complete"
+}
+#endregion
+The key things to call out in this script:
+Certificate flow — Get-VMCertificate searches LocalMachine\My by thumbprint first, falling back to subject name. Test-CertificateValidity runs before anything else touches Kafka, so you get a clear error message rather than a cryptic SSL handshake failure. It also warns at 30 days remaining so you're not caught off guard by expiry.
+Temp file cleanup — cert material is written to a GUID-named temp directory and removed in the finally block regardless of how the script exits. The try/catch inside Export-CertificateToTempFiles also cleans up if the export itself fails partway through.
+SSL toggle — passing -SslEnabled $false drops to plaintext and skips all certificate handling entirely, useful for local dev against a non-secured broker.
+Structured logging — everything goes out as JSON so it's easy to forward to Splunk, ELK, or whatever you're using.
+One thing to be aware of: if the private key on the VM cert is marked non-exportable, the Export() call will throw with an access denied error. If that happens you'll need to either reissue the cert with an exportable key, or switch to SASL-only auth (remove the cert config and rely purely on the SCRAM username/password for identity).
