@@ -1,3 +1,6 @@
+Here's a complete Avro producer script that mirrors the consumer structure:
+
+```powershell
 #Requires -Version 7.0
 
 [CmdletBinding()]
@@ -5,19 +8,21 @@ param(
     [string]$BootstrapServers  = "broker1:9092,broker2:9092",
     [string]$SchemaRegistryUrl = "https://schema-registry:8081",
     [string]$Topic             = "ECMDocuments",
-    [string]$GroupId           = "ecm-documents-consumer-group",
     [bool]  $SslEnabled        = $true,
-    [string]$CertThumbprint    = "",           # preferred - most reliable
-    [string]$CertSubjectName   = "ecm-consumer", # fallback if no thumbprint
+    [string]$CertThumbprint    = "",
+    [string]$CertSubjectName   = "ecm-producer",
     [string]$CaLocation        = "C:\certs\ca.pem",
     [string]$SaslUsername      = $env:KAFKA_SASL_USERNAME,
-    [string]$SaslPassword      = $env:KAFKA_SASL_PASSWORD
+    [string]$SaslPassword      = $env:KAFKA_SASL_PASSWORD,
+    [int]   $MaxRetries        = 3,
+    [int]   $RetryBackoffMs    = 500
 )
 
 #region Assemblies
 Add-Type -Path ".\lib\Confluent.Kafka.dll"
 Add-Type -Path ".\lib\Confluent.SchemaRegistry.dll"
 Add-Type -Path ".\lib\Confluent.SchemaRegistry.Serdes.Avro.dll"
+Add-Type -Path ".\lib\Apache.Avro.dll"
 #endregion
 
 #region Logging
@@ -27,27 +32,24 @@ function Write-Log {
         [ValidateSet("INFO","WARN","ERROR")]
         [string]$Level = "INFO"
     )
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $entry = [PSCustomObject]@{
-        timestamp = $timestamp
+        timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
         level     = $Level
         message   = $Message
-    }
-    $json = $entry | ConvertTo-Json -Compress
+    } | ConvertTo-Json -Compress
+
     switch ($Level) {
-        "ERROR" { Write-Error $json }
-        "WARN"  { Write-Warning $json }
-        default { Write-Host $json }
+        "ERROR" { Write-Error $entry }
+        "WARN"  { Write-Warning $entry }
+        default { Write-Host $entry }
     }
 }
 #endregion
 
 #region Certificate Handling
+# Shared with consumer — same functions apply
 function Get-VMCertificate {
-    param(
-        [string]$Thumbprint,
-        [string]$SubjectName
-    )
+    param([string]$Thumbprint, [string]$SubjectName)
 
     Write-Log "Loading certificate from Windows Certificate Store (LocalMachine\My)"
 
@@ -68,7 +70,7 @@ function Get-VMCertificate {
         }
 
         if (-not $cert) {
-            throw "Certificate not found in LocalMachine\My store. Thumbprint='$Thumbprint' Subject='$SubjectName'"
+            throw "Certificate not found in LocalMachine\My. Thumbprint='$Thumbprint' Subject='$SubjectName'"
         }
 
         return $cert
@@ -82,24 +84,17 @@ function Test-CertificateValidity {
     param([System.Security.Cryptography.X509Certificates.X509Certificate2]$Cert)
 
     $now = Get-Date
+    Write-Log "Certificate — Subject: $($Cert.Subject) | Thumbprint: $($Cert.Thumbprint)"
+    Write-Log "Validity — NotBefore: $($Cert.NotBefore) | NotAfter: $($Cert.NotAfter)"
 
-    Write-Log "Certificate details — Subject: $($Cert.Subject) | Thumbprint: $($Cert.Thumbprint)"
-    Write-Log "Certificate validity — NotBefore: $($Cert.NotBefore) | NotAfter: $($Cert.NotAfter)"
+    if ($now -lt $Cert.NotBefore) { throw "Certificate is not yet valid. Valid from: $($Cert.NotBefore)" }
+    if ($now -gt $Cert.NotAfter)  { throw "Certificate has EXPIRED. Expired on: $($Cert.NotAfter)" }
 
-    if ($now -lt $Cert.NotBefore) {
-        throw "Certificate is not yet valid. Valid from: $($Cert.NotBefore)"
-    }
-
-    if ($now -gt $Cert.NotAfter) {
-        throw "Certificate has EXPIRED. Expired on: $($Cert.NotAfter)"
-    }
-
-    # Warn if expiring within 30 days
     $daysRemaining = ($Cert.NotAfter - $now).Days
     if ($daysRemaining -le 30) {
-        Write-Log "WARNING: Certificate expires in $daysRemaining day(s) on $($Cert.NotAfter)" -Level WARN
+        Write-Log "Certificate expires in $daysRemaining day(s) on $($Cert.NotAfter)" -Level WARN
     } else {
-        Write-Log "Certificate is valid. Expires in $daysRemaining day(s)"
+        Write-Log "Certificate valid for $daysRemaining day(s)"
     }
 }
 
@@ -114,7 +109,6 @@ function Export-CertificateToTempFiles {
     $p12Path  = [System.IO.Path]::Combine($tempDir, "client.p12")
 
     try {
-        # Export to PKCS12 first
         $tempPassword = [System.Guid]::NewGuid().ToString()
         $pkcs12Bytes  = $Cert.Export(
             [System.Security.Cryptography.X509Certificates.X509ContentType]::Pkcs12,
@@ -122,25 +116,17 @@ function Export-CertificateToTempFiles {
         )
         [System.IO.File]::WriteAllBytes($p12Path, $pkcs12Bytes)
 
-        # Extract cert and key via openssl
         & openssl pkcs12 -in $p12Path -nokeys -out $certPath -passin "pass:$tempPassword" 2>$null
         & openssl pkcs12 -in $p12Path -nocerts -nodes -out $keyPath -passin "pass:$tempPassword" 2>$null
 
         if (-not (Test-Path $certPath) -or -not (Test-Path $keyPath)) {
-            throw "Failed to extract cert/key via openssl. Is openssl available on PATH?"
+            throw "Failed to extract cert/key via openssl. Is openssl on PATH?"
         }
 
-        Write-Log "Certificate exported to temp files successfully"
-
-        return @{
-            CertPath = $certPath
-            KeyPath  = $keyPath
-            P12Path  = $p12Path
-            TempDir  = $tempDir
-        }
+        Write-Log "Certificate exported to temp files"
+        return @{ CertPath = $certPath; KeyPath = $keyPath; P12Path = $p12Path; TempDir = $tempDir }
     }
     catch {
-        # Clean up on failure
         Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
         throw
     }
@@ -148,28 +134,88 @@ function Export-CertificateToTempFiles {
 
 function Remove-TempCertFiles {
     param([hashtable]$Paths)
-    if ($Paths -and $Paths.TempDir) {
+    if ($Paths?.TempDir) {
         Remove-Item $Paths.TempDir -Recurse -Force -ErrorAction SilentlyContinue
         Write-Log "Temporary certificate files cleaned up"
     }
 }
 #endregion
 
-#region Consumer Configuration
-function New-ConsumerConfig {
+#region Schema
+# Define your ECMDocuments Avro schema
+# Ideally load this from Schema Registry rather than hardcoding
+$ECMDocumentSchemaJson = @'
+{
+  "type": "record",
+  "name": "ECMDocument",
+  "namespace": "com.yourcompany.ecm",
+  "fields": [
+    { "name": "documentId",   "type": "string" },
+    { "name": "title",        "type": "string" },
+    { "name": "contentType",  "type": "string" },
+    { "name": "createdBy",    "type": "string" },
+    { "name": "createdAt",    "type": "long",   "logicalType": "timestamp-millis" },
+    { "name": "sizeBytes",    "type": "long" },
+    { "name": "tags",         "type": { "type": "array", "items": "string" }, "default": [] },
+    { "name": "metadata",     "type": { "type": "map", "values": "string" }, "default": {} },
+    { "name": "content",      "type": ["null", "string"], "default": null }
+  ]
+}
+'@
+
+function New-ECMDocumentRecord {
     param(
-        [bool]    $SslEnabled,
-        [hashtable]$CertPaths
+        [string]  $DocumentId,
+        [string]  $Title,
+        [string]  $ContentType,
+        [string]  $CreatedBy,
+        [long]    $SizeBytes,
+        [string[]]$Tags       = @(),
+        [hashtable]$Metadata  = @{},
+        [string]  $Content    = $null
     )
 
-    $config = [Confluent.Kafka.ConsumerConfig]::new()
-    $config.BootstrapServers = $BootstrapServers
-    $config.GroupId          = $GroupId
-    $config.AutoOffsetReset  = [Confluent.Kafka.AutoOffsetReset]::Earliest
-    $config.EnableAutoCommit = $false
+    $schema = [Avro.Schema]::Parse($ECMDocumentSchemaJson)
+    $record = [Avro.Generic.GenericRecord]::new($schema)
+
+    $record.Add("documentId",  $DocumentId)
+    $record.Add("title",       $Title)
+    $record.Add("contentType", $ContentType)
+    $record.Add("createdBy",   $CreatedBy)
+    $record.Add("createdAt",   [System.DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+    $record.Add("sizeBytes",   $SizeBytes)
+    $record.Add("tags",        [Avro.Generic.GenericArray[string]]::new(
+                                   $schema.GetField("tags").Schema, $Tags))
+    
+    # Build metadata map
+    $avroMap = [Avro.Generic.GenericRecord]::new($schema.GetField("metadata").Schema)
+    foreach ($key in $Metadata.Keys) { $avroMap[$key] = $Metadata[$key] }
+    $record.Add("metadata", $avroMap)
+
+    # Nullable union field
+    $record.Add("content", $Content)
+
+    return $record
+}
+#endregion
+
+#region Producer Configuration
+function New-ProducerConfig {
+    param([bool]$SslEnabled, [hashtable]$CertPaths)
+
+    $config = [Confluent.Kafka.ProducerConfig]::new()
+    $config.BootstrapServers        = $BootstrapServers
+    $config.Acks                    = [Confluent.Kafka.Acks]::All       # wait for all ISR replicas
+    $config.EnableIdempotence       = $true                              # exactly-once producer semantics
+    $config.MaxInFlight             = 5                                  # safe with idempotence enabled
+    $config.MessageSendMaxRetries   = $MaxRetries
+    $config.RetryBackoffMs          = $RetryBackoffMs
+    $config.CompressionType         = [Confluent.Kafka.CompressionType]::Snappy
+    $config.LingerMs                = 5                                  # small batching window
+    $config.BatchSize               = 65536                              # 64KB batch size
 
     if ($SslEnabled) {
-        Write-Log "Configuring consumer with SSL enabled"
+        Write-Log "Configuring producer with SSL enabled"
         $config.SecurityProtocol       = [Confluent.Kafka.SecurityProtocol]::SaslSsl
         $config.SaslMechanism          = [Confluent.Kafka.SaslMechanism]::ScramSha256
         $config.SaslUsername           = $SaslUsername
@@ -184,153 +230,174 @@ function New-ConsumerConfig {
 
     return $config
 }
-
-function New-SchemaRegistryConfig {
-    param([bool]$SslEnabled)
-
-    $srConfig = [Confluent.SchemaRegistry.SchemaRegistryConfig]::new()
-    $srConfig.Url = $SchemaRegistryUrl
-
-    if ($SslEnabled) {
-        $srConfig.SslCaLocation  = $CaLocation
-        $srConfig.BasicAuthUserInfo = "$($SaslUsername):$($SaslPassword)"
-    }
-
-    return $srConfig
-}
 #endregion
 
-#region Message Processing
-function Invoke-ProcessMessage {
-    param([Avro.Generic.GenericRecord]$Record)
+#region Produce Helpers
+function Invoke-ProduceMessage {
+    param(
+        $Producer,
+        [string]$Key,
+        [Avro.Generic.GenericRecord]$Record,
+        [int]$AttemptNumber = 1
+    )
 
-    # Replace this with your actual ECMDocuments processing logic
-    $fields = @{}
-    foreach ($field in $Record.Schema.Fields) {
-        $fields[$field.Name] = $Record[$field.Name]
+    try {
+        $message = [Confluent.Kafka.Message[string, Avro.Generic.GenericRecord]]::new()
+        $message.Key   = $Key
+        $message.Value = $Record
+
+        # Produce and wait for delivery report
+        $deliveryResult = $Producer.ProduceAsync($Topic, $message).GetAwaiter().GetResult()
+
+        Write-Log "Produced — Key: $Key | Partition: $($deliveryResult.Partition) | Offset: $($deliveryResult.Offset) | Status: $($deliveryResult.Status)"
+        return $deliveryResult
+    }
+    catch [Confluent.Kafka.ProduceException[string, Avro.Generic.GenericRecord]] {
+        $err = $_.Exception.Error
+
+        if ($err.Code -eq [Confluent.Kafka.ErrorCode]::TopicAuthorizationFailed) {
+            Write-Log "ACL denied — check principal has WRITE on topic: $Topic" -Level ERROR
+            throw
+        }
+
+        if ($err.IsFatal) {
+            Write-Log "Fatal produce error: $($err.Reason)" -Level ERROR
+            throw
+        }
+
+        if ($AttemptNumber -lt $MaxRetries) {
+            $backoff = $RetryBackoffMs * $AttemptNumber
+            Write-Log "Retriable produce error (attempt $AttemptNumber/$MaxRetries): $($err.Reason) — retrying in ${backoff}ms" -Level WARN
+            Start-Sleep -Milliseconds $backoff
+            return Invoke-ProduceMessage -Producer $Producer -Key $Key -Record $Record -AttemptNumber ($AttemptNumber + 1)
+        }
+
+        Write-Log "Max retries exceeded for key: $Key" -Level ERROR
+        throw
+    }
+}
+
+function Invoke-ProduceBatch {
+    param(
+        $Producer,
+        [array]$Documents
+    )
+
+    $results   = [System.Collections.Generic.List[object]]::new()
+    $failed    = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($doc in $Documents) {
+        try {
+            $record = New-ECMDocumentRecord @doc
+            $result = Invoke-ProduceMessage -Producer $Producer -Key $doc.DocumentId -Record $record
+            $results.Add($result)
+        }
+        catch {
+            Write-Log "Failed to produce document '$($doc.DocumentId)': $_" -Level ERROR
+            $failed.Add($doc)
+        }
     }
 
-    Write-Log "Processing ECMDocument: $(($fields | ConvertTo-Json -Compress))"
+    # Flush ensures all async sends are complete before returning
+    $Producer.Flush([System.TimeSpan]::FromSeconds(30))
 
-    # e.g. write to DB, call API, etc.
+    Write-Log "Batch complete — Sent: $($results.Count) | Failed: $($failed.Count)"
+
+    return @{ Results = $results; Failed = $failed }
 }
 #endregion
 
 #region Main
 $tempCertPaths = $null
-$consumer      = $null
-$cts           = [System.Threading.CancellationTokenSource]::new()
-
-# Graceful shutdown on CTRL+C
-[Console]::CancelKeyPress += {
-    param($sender, $e)
-    $e.Cancel = $true
-    Write-Log "Shutdown signal received..."
-    $cts.Cancel()
-}
+$producer      = $null
 
 try {
-    # --- Certificate handling (only needed if SSL enabled) ---
+    # --- Certificate ---
     if ($SslEnabled) {
         $cert = Get-VMCertificate -Thumbprint $CertThumbprint -SubjectName $CertSubjectName
         Test-CertificateValidity -Cert $cert
         $tempCertPaths = Export-CertificateToTempFiles -Cert $cert
     }
 
-    # --- Build consumer ---
-    $consumerConfig      = New-ConsumerConfig -SslEnabled $SslEnabled -CertPaths $tempCertPaths
-    $srConfig            = New-SchemaRegistryConfig -SslEnabled $SslEnabled
+    # --- Schema Registry ---
+    $srConfig     = [Confluent.SchemaRegistry.SchemaRegistryConfig]::new()
+    $srConfig.Url = $SchemaRegistryUrl
+    if ($SslEnabled) {
+        $srConfig.SslCaLocation     = $CaLocation
+        $srConfig.BasicAuthUserInfo = "$($SaslUsername):$($SaslPassword)"
+    }
     $schemaRegistryClient = [Confluent.SchemaRegistry.CachedSchemaRegistryClient]::new($srConfig)
 
-    $consumerBuilder = [Confluent.Kafka.ConsumerBuilder[
-        Confluent.Kafka.Ignore,
-        Avro.Generic.GenericRecord
-    ]]::new($consumerConfig)
+    # --- Build producer ---
+    $producerConfig  = New-ProducerConfig -SslEnabled $SslEnabled -CertPaths $tempCertPaths
+    $producerBuilder = [Confluent.Kafka.ProducerBuilder[string, Avro.Generic.GenericRecord]]::new($producerConfig)
 
-    $avroDeserializer = [Confluent.SchemaRegistry.Serdes.AvroDeserializer[Avro.Generic.GenericRecord]]::new(
+    $avroSerializer = [Confluent.SchemaRegistry.Serdes.AvroSerializer[Avro.Generic.GenericRecord]]::new(
         $schemaRegistryClient, $null
     )
-    $consumerBuilder.SetValueDeserializer($avroDeserializer.AsSyncOverAsync())
+    $producerBuilder.SetValueSerializer($avroSerializer.AsSyncOverAsync())
 
-    $consumerBuilder.SetErrorHandler({
+    $producerBuilder.SetErrorHandler({
         param($_, $error)
         Write-Log "Kafka error: [$($error.Code)] $($error.Reason)" -Level ($error.IsFatal ? "ERROR" : "WARN")
     })
 
-    $consumerBuilder.SetPartitionsAssignedHandler({
-        param($_, $partitions)
-        Write-Log "Partitions assigned: $($partitions | ForEach-Object { $_.Partition.Value } | Join-String -Separator ', ')"
+    $producerBuilder.SetStatisticsHandler({
+        param($_, $statsJson)
+        # Uncomment to log raw stats — can be verbose
+        # Write-Log "Stats: $statsJson"
     })
 
-    $consumerBuilder.SetPartitionsRevokedHandler({
-        param($c, $partitions)
-        Write-Log "Partitions revoked — committing offsets"
-        try { $c.Commit() } catch { Write-Log "Commit on revoke failed: $_" -Level WARN }
-    })
+    $producer = $producerBuilder.Build()
+    Write-Log "Producer ready"
 
-    $consumer = $consumerBuilder.Build()
-    $consumer.Subscribe($Topic)
-    Write-Log "Subscribed to topic: $Topic"
+    # --- Example: produce a single document ---
+    $record = New-ECMDocumentRecord `
+        -DocumentId  ([System.Guid]::NewGuid().ToString()) `
+        -Title       "Q4 Financial Report" `
+        -ContentType "application/pdf" `
+        -CreatedBy   "svc-ecm-ingest" `
+        -SizeBytes   204800 `
+        -Tags        @("finance", "quarterly", "confidential") `
+        -Metadata    @{ department = "finance"; region = "EMEA" } `
+        -Content     $null
 
-    # --- Consume loop ---
-    $maxRetries  = 3
-    $retryCount  = 0
+    Invoke-ProduceMessage -Producer $producer -Key $record["documentId"] -Record $record
 
-    while (-not $cts.Token.IsCancellationRequested) {
-        try {
-            $result = $consumer.Consume($cts.Token)
+    # --- Example: produce a batch ---
+    $batch = @(
+        @{ DocumentId = [System.Guid]::NewGuid().ToString(); Title = "Contract A"; ContentType = "application/pdf";  CreatedBy = "svc-ecm"; SizeBytes = 102400; Tags = @("legal") }
+        @{ DocumentId = [System.Guid]::NewGuid().ToString(); Title = "Invoice B";  ContentType = "application/docx"; CreatedBy = "svc-ecm"; SizeBytes = 51200;  Tags = @("finance") }
+    )
 
-            if ($null -eq $result) { continue }
+    $batchResult = Invoke-ProduceBatch -Producer $producer -Documents $batch
 
-            try {
-                Invoke-ProcessMessage -Record $result.Message.Value
-                $consumer.Commit($result)
-                $retryCount = 0
-            }
-            catch {
-                $retryCount++
-                Write-Log "Processing failed (attempt $retryCount/$maxRetries): $_" -Level WARN
-
-                if ($retryCount -ge $maxRetries) {
-                    Write-Log "Max retries reached — sending to DLQ" -Level ERROR
-                    # TODO: produce to ECMDocuments.DLQ
-                    $consumer.Commit($result)
-                    $retryCount = 0
-                }
-            }
-        }
-        catch [Confluent.Kafka.ConsumeException] {
-            $err = $_.Exception.Error
-            if ($err.Code -eq [Confluent.Kafka.ErrorCode]::TopicAuthorizationFailed) {
-                Write-Log "ACL denied — check principal has READ on topic and consumer group" -Level ERROR
-                throw
-            }
-            if ($err.IsFatal) {
-                Write-Log "Fatal Kafka error: $($err.Reason)" -Level ERROR
-                throw
-            }
-            Write-Log "Retriable Kafka error: $($err.Reason)" -Level WARN
-        }
-        catch [System.OperationCanceledException] {
-            break
-        }
+    if ($batchResult.Failed.Count -gt 0) {
+        Write-Log "$($batchResult.Failed.Count) document(s) failed to produce" -Level WARN
+        # Handle failed docs — write to file, retry queue, alert, etc.
     }
 }
 catch {
-    Write-Log "Consumer failed: $_" -Level ERROR
+    Write-Log "Producer failed: $_" -Level ERROR
     exit 1
 }
 finally {
-    Write-Log "Shutting down..."
-    try { $consumer.Close() } catch {}
-    try { $consumer.Dispose() } catch {}
+    try { $producer.Flush([System.TimeSpan]::FromSeconds(30)) } catch {}
+    try { $producer.Dispose() } catch {}
     Remove-TempCertFiles -Paths $tempCertPaths
     Write-Log "Shutdown complete"
 }
 #endregion
-The key things to call out in this script:
-Certificate flow — Get-VMCertificate searches LocalMachine\My by thumbprint first, falling back to subject name. Test-CertificateValidity runs before anything else touches Kafka, so you get a clear error message rather than a cryptic SSL handshake failure. It also warns at 30 days remaining so you're not caught off guard by expiry.
-Temp file cleanup — cert material is written to a GUID-named temp directory and removed in the finally block regardless of how the script exits. The try/catch inside Export-CertificateToTempFiles also cleans up if the export itself fails partway through.
-SSL toggle — passing -SslEnabled $false drops to plaintext and skips all certificate handling entirely, useful for local dev against a non-secured broker.
-Structured logging — everything goes out as JSON so it's easy to forward to Splunk, ELK, or whatever you're using.
-One thing to be aware of: if the private key on the VM cert is marked non-exportable, the Export() call will throw with an access denied error. If that happens you'll need to either reissue the cert with an exportable key, or switch to SASL-only auth (remove the cert config and rely purely on the SCRAM username/password for identity).
+```
+
+The main things worth calling out that differ from the consumer:
+
+**Idempotence and Acks** — `EnableIdempotence = $true` combined with `Acks = All` is the most important producer setting for reliability. It prevents duplicate messages if a retry occurs after the broker received the message but before the ack came back. Without this, a network blip during a retry can result in duplicate records in your topic.
+
+**Linger and batching** — `LingerMs = 5` tells the producer to wait up to 5ms before sending, allowing multiple messages to be batched together. Combined with `BatchSize`, this significantly improves throughput when producing in a loop. For low-latency single-message use cases you can set `LingerMs = 0`.
+
+**Flush in finally** — the `Flush()` call in the finally block is critical. `ProduceAsync` is fire-and-forget by default; without an explicit flush, buffered messages can be silently dropped when the producer is disposed.
+
+**Keying strategy** — the example uses `documentId` as the message key. This guarantees all messages for the same document land on the same partition, preserving ordering per document. If ordering doesn't matter across documents you could use a null key, but having a meaningful key is generally better for log compaction and consumer parallelism.
+
+**Nullable union fields** — the `content` field uses an Avro union `["null", "string"]`. The null type must be listed first in the schema definition if null is the default, otherwise the Avro serializer will complain.
