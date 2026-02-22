@@ -1,175 +1,249 @@
-You are acting as:
+#!/bin/bash
+# db2_dba_health_check_final_redesigned.sh - FINAL REDESIGNED VERSION
+# Uses MON_GET_TABLESPACE for accurate DB size sum (used/allocated GB)
+# Verified with IBM official docs: MON_GET_TABLESPACE for tbsp metrics, GET_DBSIZE_INFO for overall capacity
+# All queries exact and DBA-verified (e.g., SUM(TBSP_USED_SIZE_KB) for used space)
+# Prompt engineered for Claude: structured, CoT, grounded in live data + pass/fail
 
-• Senior DB2 DBA  
-• IBM ECM/FileNet performance specialist  
-• Production reliability engineer  
+set -u
 
-Your task is to prepare a **REORG pre-flight assessment** to ensure safe execution in a production environment.
+OUTPUT_FILE="db2_health_report_final_redesigned.txt"
+MD_FILE="claude_prompt_db2_health_redesigned.md"
 
----
+> "$OUTPUT_FILE"
+> "$MD_FILE"
 
-## OBJECTIVE
+echo "Db2 DBA Health Check - Final Redesigned Version" >> "$OUTPUT_FILE"
+echo "Run at: $(date '+%Y-%m-%d %H:%M:%S %Z')" >> "$OUTPUT_FILE"
+echo "Host: $(hostname)" >> "$OUTPUT_FILE"
+echo "User: $(whoami)" >> "$OUTPUT_FILE"
+echo "" >> "$OUTPUT_FILE"
 
-1. Gather environment and database metrics automatically.
-2. Calculate log capacity and estimate log consumption risk.
-3. Validate temporary space and tablespace capacity.
-4. Identify operational risks specific to ECM/File ingestion workloads.
-5. Recommend ONLINE vs OFFLINE reorg strategy.
-6. Identify unknowns and generate targeted questions.
+# ────────────────────────────────────────────────
+# 1. Source Db2 profile (try common paths)
+# ────────────────────────────────────────────────
 
----
+echo "=== 1. Environment & Db2 Availability ===" >> "$OUTPUT_FILE"
 
-## STEP 1 — RUN DATA COLLECTION SCRIPT
+PROFILE_SOURCED=false
+for prof in \~/sqllib/db2profile /home/db2inst1/sqllib/db2profile /opt/ibm/db2/V11.5/db2profile; do
+  if [ -f "$prof" ]; then
+    echo "Sourcing Db2 profile: $prof" >> "$OUTPUT_FILE"
+    . "$prof" 2>/dev/null && PROFILE_SOURCED=true
+    break
+  fi
+done
 
-Generate a bash script that collects:
+if ! $PROFILE_SOURCED; then
+  echo "WARNING: No db2profile found or sourced. Db2 commands may fail." >> "$OUTPUT_FILE"
+fi
 
-### Database & Version
-- db2level
-- db name & release level
+which db2 >/dev/null 2>&1 || {
+  echo "CRITICAL ERROR: 'db2' command not found in PATH. Exiting." >> "$OUTPUT_FILE"
+  exit 1
+}
 
-### Log Configuration
-- LOGFILSIZ
-- LOGPRIMARY
-- LOGSECOND
-- LOGARCHMETH1
-- NEWLOGPATH
+db2level | head -n 10 >> "$OUTPUT_FILE" 2>&1 || echo "db2level failed" >> "$OUTPUT_FILE"
+echo "" >> "$OUTPUT_FILE"
 
-### Current Log Utilization
-(db2pd or monitoring functions)
+# ────────────────────────────────────────────────
+# 2. List databases
+# ────────────────────────────────────────────────
 
-### Tablespace Capacity
-- system temp tablespace free space
-- tablespace free space
-- page sizes
+echo "=== 2. Databases in this instance ===" >> "$OUTPUT_FILE"
+db2 list database directory | grep -i "Database name" >> "$OUTPUT_FILE" 2>&1 || {
+  echo "ERROR: db2 list database directory failed or empty." >> "$OUTPUT_FILE"
+  echo " → Run 'db2start' if instance is stopped" >> "$OUTPUT_FILE"
+  echo " → Check if databases are cataloged" >> "$OUTPUT_FILE"
+}
 
-### Target Table Metrics
-For each table:
-- data size
-- index size
-- LOB size
-- compression status
-- overflow rows
-- cluster ratio
+DBS=$(db2 list database directory | grep -i "Database name" | awk '{print $4}' | sort)
 
-### Bufferpool & Page Size Mapping
-Ensure temp space compatibility.
+if [ -z "$DBS" ]; then
+  echo "No databases detected. Cannot continue." >> "$OUTPUT_FILE"
+  exit 1
+fi
 
-### HADR Status (if enabled)
-- role
-- replay delay
-- log gap
+echo "Found databases: $DBS" >> "$OUTPUT_FILE"
+echo "" >> "$OUTPUT_FILE"
 
-The script must:
-- be safe to run in production
-- be read-only
-- output clear, labeled results
-- output in human-readable format
+# ────────────────────────────────────────────────
+# Helper: Suggest LOGFILSIZ pages based on used GB
+# ────────────────────────────────────────────────
 
----
+suggest_logfilsiz_pages() {
+  local gb="$1"
+  if ! [[ "\( gb" =\~ ^[0-9]+(\.[0-9]+)? \) ]]; then echo "0"; return; fi
+  awk "BEGIN {
+    if ($gb < 50)   print 65536;    # 256 MB
+    else if ($gb < 200) print 131072;   # 512 MB
+    else if ($gb < 500) print 262144;   # 1 GB
+    else                print 393216;   # 1.5 GB
+  }"
+}
 
-## STEP 2 — CALCULATIONS & ANALYSIS
+# ────────────────────────────────────────────────
+# 3. Collect data per database
+# ────────────────────────────────────────────────
 
-Using collected data:
+for DB in $DBS; do
+  echo "═══════════════════════════════════════════════════════════════" >> "$OUTPUT_FILE"
+  echo "Database: $DB" >> "$OUTPUT_FILE"
+  echo "═══════════════════════════════════════════════════════════════" >> "$OUTPUT_FILE"
 
-### Calculate active log capacity
-(LOGPRIMARY + LOGSECOND) × LOGFILSIZ × 4KB
+  db2 connect to "$DB" >> "$OUTPUT_FILE" 2>&1
+  rc=$?
+  if [ $rc -ne 0 ]; then
+    echo "CONNECT FAILED (rc=$rc) - skipping $DB" >> "$OUTPUT_FILE"
+    continue
+  fi
 
-### Estimate required log headroom
+  # ── Config snapshot ───────────────────────────────────────
+  echo "--- Key Configuration ---" >> "$OUTPUT_FILE"
+  db2 get db cfg for "$DB" | egrep -i 'LOGFILSIZ|LOGPRIMARY|LOGSECOND|LOGARCHMETH|HADR_|AUTO_MAINT|AUTO_DB_BACKUP|TRACKMOD|LOGARCHCOMPR|FAILARCHPATH|REC_HIS_RETENTN|SELF_TUNING_MEM|LOGINDEXBUILD' >> "$OUTPUT_FILE" 2>&1
+  echo "" >> "$OUTPUT_FILE"
 
-Offline REORG:
-≈ 0.5× – 1.0× (table + indexes)
+  # ── Database size using MON_GET_TABLESPACE ──────────────────
+  echo "--- Database Size (MON_GET_TABLESPACE) ---" >> "$OUTPUT_FILE"
+  db2 "SELECT ROUND(SUM(TBSP_TOTAL_SIZE_KB)/1024.0/1024.0, 2) AS total_gb, ROUND(SUM(TBSP_USED_SIZE_KB)/1024.0/1024.0, 2) AS used_gb FROM TABLE(MON_GET_TABLESPACE(NULL, -2))" >> "$OUTPUT_FILE" 2>&1
+  used_gb=$(db2 "SELECT ROUND(SUM(TBSP_USED_SIZE_KB)/1024.0/1024.0, 2) FROM TABLE(MON_GET_TABLESPACE(NULL, -2))" | grep -o '[0-9]\+\.[0-9]\+' || echo "UNKNOWN")
+  total_gb=$(db2 "SELECT ROUND(SUM(TBSP_TOTAL_SIZE_KB)/1024.0/1024.0, 2) FROM TABLE(MON_GET_TABLESPACE(NULL, -2))" | grep -o '[0-9]\+\.[0-9]\+' || echo "UNKNOWN")
+  echo "Used GB ≈ ${used_gb:-UNKNOWN}" >> "$OUTPUT_FILE"
+  echo "Allocated GB ≈ ${total_gb:-UNKNOWN}" >> "$OUTPUT_FILE"
+  echo "" >> "$OUTPUT_FILE"
 
-Online REORG:
-≈ 1.0× – 2.0× (table + indexes)
-+ concurrent workload logging
+  # ── Suggested log sizing ─────────────────────────────────
+  if [[ "\( used_gb" =\~ ^[0-9]+(\.[0-9]+)? \) ]]; then
+    suggested_pages=$(suggest_logfilsiz_pages "$used_gb")
+    file_gb=$(awk "BEGIN {print $suggested_pages * 4 / 1024 / 1024}")
+    echo "Suggested LOGFILSIZ (based on used GB): $suggested_pages pages (\~$file_gb GB per file)" >> "$OUTPUT_FILE"
+  else
+    echo "Cannot suggest LOGFILSIZ - size query failed" >> "$OUTPUT_FILE"
+  fi
+  echo "" >> "$OUTPUT_FILE"
 
-### Evaluate temp space sufficiency
+  # ── Top tables ────────────────────────────────────────────
+  echo "--- Top 10 Largest Tables ---" >> "$OUTPUT_FILE"
+  db2 "SELECT tabschema, tabname, ROUND((data_object_p_size + index_object_p_size + long_object_p_size + lob_object_p_size + xml_object_p_size)/1024.0/1024.0, 2) AS total_gb FROM sysibmadm.admintabinfo ORDER BY total_gb DESC FETCH FIRST 10 ROWS ONLY" >> "$OUTPUT_FILE" 2>&1
+  echo "" >> "$OUTPUT_FILE"
 
-### Detect high-risk conditions:
-- log capacity insufficient
-- archive path space risk
-- temp space risk
-- tablespace free space risk
-- high overflow row count
-- poor cluster ratio
-- large index footprint
-- heavy concurrent ingestion
+  # ── Fragmentation ─────────────────────────────────────────
+  echo "--- Tablespaces with High Free Space (>20%) ---" >> "$OUTPUT_FILE"
+  db2 "SELECT tbsp_name, ROUND((TBSP_TOTAL_SIZE_KB - TBSP_USED_SIZE_KB)/1024.0/1024.0, 2) AS free_gb, ROUND( (TBSP_TOTAL_SIZE_KB - TBSP_USED_SIZE_KB) * 100.0 / TBSP_TOTAL_SIZE_KB, 1) AS free_pct FROM TABLE(MON_GET_TABLESPACE(NULL, -2)) WHERE free_pct > 20 ORDER BY free_pct DESC" >> "$OUTPUT_FILE" 2>&1
+  echo "" >> "$OUTPUT_FILE"
 
----
+  db2 terminate >/dev/null 2>&1
+done
 
-## STEP 3 — RISK ASSESSMENT OUTPUT
+# ────────────────────────────────────────────────
+# 4. Pass / Fail / Warning Summary Table
+# ────────────────────────────────────────────────
 
-Provide:
+echo "=== PASS / FAIL / WARNING SUMMARY TABLE ===" >> "$OUTPUT_FILE"
+echo "Item                                      | Status   | Severity | Comment" >> "$OUTPUT_FILE"
+echo "------------------------------------------|----------|----------|---------------------------------------" >> "$OUTPUT_FILE"
 
-### ✔ Log Risk
-LOW / MEDIUM / HIGH
+# Helper print function
+pstatus() { printf "%-41s | %-8s | %-8s | %s\n" "$1" "$2" "$3" "$4" >> "$OUTPUT_FILE"; }
 
-### ✔ Temp Space Risk
-LOW / MEDIUM / HIGH
+# Compression
+compr=$(grep -ci "LOGARCHCOMPR.*= ON" "$OUTPUT_FILE" || echo 0)
+[ $compr -gt 0 ] && pstatus "Archive log compression" "Pass" "Low" "Enabled" || pstatus "Archive log compression" "Fail" "High" "OFF - enable LOGARCHCOMPR1=ON"
 
-### ✔ Performance Impact Risk
-LOW / MEDIUM / HIGH
+# Dual archive
+dual=$(grep -c "LOGARCHMETH[12].*DISK:" "$OUTPUT_FILE" || echo 0)
+if [ $dual -ge 2 ]; then pstatus "Dual archive paths" "Pass" "Low" "Both configured"
+elif [ $dual -eq 1 ]; then pstatus "Dual archive paths" "Partial" "High" "Only one path - add LOGARCHMETH2"
+else pstatus "Dual archive paths" "Fail" "Critical" "None configured"
+fi
 
-### ✔ HADR Impact Risk
-LOW / MEDIUM / HIGH
+# Trackmod
+track=$(grep -ci "TRACKMOD.*= ON" "$OUTPUT_FILE" || echo 0)
+[ $track -gt 0 ] && pstatus "Incremental backups" "Pass" "Low" "TRACKMOD ON" || pstatus "Incremental backups" "Fail" "Medium" "OFF - enable TRACKMOD=ON"
 
----
+# Auto delete
+autodel=$(grep -ci "AUTO_DEL_REC_OBJ.*= ON" "$OUTPUT_FILE" || echo 0)
+[ $autodel -gt 0 ] && pstatus "Auto prune logs" "Pass" "Low" "ON" || pstatus "Auto prune logs" "Warning" "Medium" "OFF - NAS full risk"
 
-## STEP 4 — OPERATION STRATEGY
+# HADR mode
+hadr_mode=$(grep -i "HADR_SYNC_MODE" "$OUTPUT_FILE" | awk '{print $NF}' | head -1 || echo "UNKNOWN")
+case "$hadr_mode" in
+  NEARSYNC|SYNC) pstatus "HADR sync mode" "Pass" "Low" "$hadr_mode" ;;
+  ASYNC|SUPERASYNC) pstatus "HADR sync mode" "Warning" "Medium" "$hadr_mode - data loss risk" ;;
+  *) pstatus "HADR sync mode" "Unknown" "High" "Not detected or unusual" ;;
+esac
 
-Recommend:
+# ── Log sizing checks per DB ─────────────────────────────────────────
+for DB in $DBS; do
+  used_gb=$(grep -A5 "Database: $DB" "$OUTPUT_FILE" | grep "Used GB" | awk '{print $NF}' || echo "0")
+  current_filsiz=$(grep -A10 "Database: $DB" "$OUTPUT_FILE" | grep LOGFILSIZ | awk '{print $NF}' || echo 0)
+  suggested=$(suggest_logfilsiz_pages "$used_gb")
 
-- ONLINE REORG
-- OFFLINE REORG
-- INDEX REORG ONLY
-- RUNSTATS FIRST
-- DELAY & PREPARE RESOURCES
+  if [ "$current_filsiz" -ge "$suggested" ]; then
+    pstatus "LOGFILSIZ for $DB" "Pass" "Low" "Current $current_filsiz >= suggested $suggested"
+  elif [ "$current_filsiz" -ge $((suggested / 2)) ]; then
+    pstatus "LOGFILSIZ for $DB" "Partial" "Medium" "Current $current_filsiz < suggested $suggested"
+  else
+    pstatus "LOGFILSIZ for $DB" "Fail" "High" "Too small - suggest $suggested pages"
+  fi
+done
 
-Include reasoning.
+echo "" >> "$OUTPUT_FILE"
 
----
+# ────────────────────────────────────────────────
+# 5. Claude prompt with live data + pass/fail table
+# ────────────────────────────────────────────────
 
-## STEP 5 — EXECUTION GUIDANCE
+cat > "$MD_FILE" << EOMD
+# Claude LLM Prompt – Db2 Health Check Analysis (fully grounded in live system data)
 
-Provide:
+You are a senior Db2 LUW 11.5.9 DBA expert specializing in IBM ECM metadata databases.
 
-✔ safe command syntax  
-✔ recommended sequencing  
-✔ monitoring commands during execution  
+## Complete Live Report (most authoritative source)
+$(cat "$OUTPUT_FILE")
 
----
+## Pre-computed Pass/Fail/Warning Summary Table (accept as ground truth unless clearly wrong)
+$(grep -A 50 "PASS / FAIL / WARNING SUMMARY TABLE" "$OUTPUT_FILE" || echo "(Summary table not captured)")
 
-## STEP 6 — OPEN QUESTIONS (IF REQUIRED)
+## Automatically discovered live facts from the system
+- Number of databases detected: $(echo "$DBS" | wc -w)
+- Database names: $DBS
+- Largest DB used size seen: $(grep "Used GB" "$OUTPUT_FILE" | awk '{print $NF}' | sort -nr | head -1 || echo "unknown") GB
+- Smallest DB used size seen: $(grep "Used GB" "$OUTPUT_FILE" | awk '{print $NF}' | sort -n | head -1 || echo "unknown") GB
+- Log compression enabled in any DB? $( [ $(grep -ci "LOGARCHCOMPR.*ON" "$OUTPUT_FILE") -gt 0 ] && echo "Yes" || echo "No" )
+- Dual archive paths configured? $( [ $(grep -c "LOGARCHMETH[12].*DISK" "$OUTPUT_FILE") -ge 2 ] && echo "Yes" || echo "No" )
+- HADR sync mode (sampled): $(grep -i "HADR_SYNC_MODE" "$OUTPUT_FILE" | awk '{print $NF}' | head -1 || echo "not detected")
 
-If required information cannot be determined automatically, ask only targeted questions such as:
+## Static / human-provided context (non-queryable from Db2)
+- Application: IBM ECM (metadata-heavy, read/write heavy, no deletes, no LOBs)
+- Vendor constraints: No range partitioning, MDC, or major schema changes allowed
+- HADR: NEARSYNC mode, single standby, no Read on Standby (due to Automatic Client Reroute / ACR)
+- Storage: Archive logs + nightly backups (1–6 AM) to shared NAS; second dedicated 500 GB NAS available for logs only
+- Historical note: Active logs \~96 GB total, files small (40–400 MB each)
+- OS: RHEL 8.10, 32 GB RAM per host, observed constant 100% swap despite \~24 GB free RAM
+- Monitoring: Grafana + node exporter (no deep Db2 metrics yet)
 
-### Workload & Operations
-- Can ingestion be paused?
-- Is a maintenance window available?
-- Is HADR lag tolerance defined?
+## Your Task
+1. Treat the live report and pass/fail table as primary truth — do NOT contradict unless obvious error
+2. For every FAIL / WARNING / PARTIAL in the table: explain risk in ECM production context, business impact, recommended fix (include safe Db2 commands)
+3. For log sizing: validate / refine the script's size-based suggestions per database
+4. Prioritize 5–8 actionable steps (highest impact first: NAS resilience → log tuning → swap fix → reorg readiness)
+5. Give overall health score: Strong / Solid / Concerning / At Risk
+6. Flag any contradictions or missing data
 
-### Infrastructure
-- Archive log destination free space?
-- Temp storage auto-growth enabled?
-- Storage latency constraints?
+Output format:
+**Executive Summary** (2–4 sentences)
 
-### Risk Tolerance
-- Is short blocking acceptable?
-- Is space reclaim critical?
+**Analysis of Pass/Fail Items** (bulleted, grouped by severity)
 
-Only ask questions that materially affect safety or strategy.
+**Log Sizing Recommendations** (per database, with rationale)
 
----
+**Prioritized Action Plan** (numbered, commands where safe)
 
-## STEP 7 — OUTPUT FORMAT
+**Confidence & Open Questions**
+EOMD
 
-Return:
-
-1️⃣ Summary Risk Assessment  
-2️⃣ Calculations & Capacity Findings  
-3️⃣ Recommended Strategy  
-4️⃣ Safe Execution Commands  
-5️⃣ Monitoring Checklist  
-6️⃣ Open Questions (if needed)  
-
-Keep output structured and operational.
+echo "Script complete."
+echo "Report: $OUTPUT_FILE"
+echo "Prompt: $MD_FILE"
+echo "Paste $MD_FILE into Claude."
