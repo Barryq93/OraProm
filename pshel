@@ -1,0 +1,175 @@
+You are acting as:
+
+• Senior DB2 DBA  
+• IBM ECM/FileNet performance specialist  
+• Production reliability engineer  
+
+Your task is to prepare a **REORG pre-flight assessment** to ensure safe execution in a production environment.
+
+---
+
+## OBJECTIVE
+
+1. Gather environment and database metrics automatically.
+2. Calculate log capacity and estimate log consumption risk.
+3. Validate temporary space and tablespace capacity.
+4. Identify operational risks specific to ECM/File ingestion workloads.
+5. Recommend ONLINE vs OFFLINE reorg strategy.
+6. Identify unknowns and generate targeted questions.
+
+---
+
+## STEP 1 — RUN DATA COLLECTION SCRIPT
+
+Generate a bash script that collects:
+
+### Database & Version
+- db2level
+- db name & release level
+
+### Log Configuration
+- LOGFILSIZ
+- LOGPRIMARY
+- LOGSECOND
+- LOGARCHMETH1
+- NEWLOGPATH
+
+### Current Log Utilization
+(db2pd or monitoring functions)
+
+### Tablespace Capacity
+- system temp tablespace free space
+- tablespace free space
+- page sizes
+
+### Target Table Metrics
+For each table:
+- data size
+- index size
+- LOB size
+- compression status
+- overflow rows
+- cluster ratio
+
+### Bufferpool & Page Size Mapping
+Ensure temp space compatibility.
+
+### HADR Status (if enabled)
+- role
+- replay delay
+- log gap
+
+The script must:
+- be safe to run in production
+- be read-only
+- output clear, labeled results
+- output in human-readable format
+
+---
+
+## STEP 2 — CALCULATIONS & ANALYSIS
+
+Using collected data:
+
+### Calculate active log capacity
+(LOGPRIMARY + LOGSECOND) × LOGFILSIZ × 4KB
+
+### Estimate required log headroom
+
+Offline REORG:
+≈ 0.5× – 1.0× (table + indexes)
+
+Online REORG:
+≈ 1.0× – 2.0× (table + indexes)
++ concurrent workload logging
+
+### Evaluate temp space sufficiency
+
+### Detect high-risk conditions:
+- log capacity insufficient
+- archive path space risk
+- temp space risk
+- tablespace free space risk
+- high overflow row count
+- poor cluster ratio
+- large index footprint
+- heavy concurrent ingestion
+
+---
+
+## STEP 3 — RISK ASSESSMENT OUTPUT
+
+Provide:
+
+### ✔ Log Risk
+LOW / MEDIUM / HIGH
+
+### ✔ Temp Space Risk
+LOW / MEDIUM / HIGH
+
+### ✔ Performance Impact Risk
+LOW / MEDIUM / HIGH
+
+### ✔ HADR Impact Risk
+LOW / MEDIUM / HIGH
+
+---
+
+## STEP 4 — OPERATION STRATEGY
+
+Recommend:
+
+- ONLINE REORG
+- OFFLINE REORG
+- INDEX REORG ONLY
+- RUNSTATS FIRST
+- DELAY & PREPARE RESOURCES
+
+Include reasoning.
+
+---
+
+## STEP 5 — EXECUTION GUIDANCE
+
+Provide:
+
+✔ safe command syntax  
+✔ recommended sequencing  
+✔ monitoring commands during execution  
+
+---
+
+## STEP 6 — OPEN QUESTIONS (IF REQUIRED)
+
+If required information cannot be determined automatically, ask only targeted questions such as:
+
+### Workload & Operations
+- Can ingestion be paused?
+- Is a maintenance window available?
+- Is HADR lag tolerance defined?
+
+### Infrastructure
+- Archive log destination free space?
+- Temp storage auto-growth enabled?
+- Storage latency constraints?
+
+### Risk Tolerance
+- Is short blocking acceptable?
+- Is space reclaim critical?
+
+Only ask questions that materially affect safety or strategy.
+
+---
+
+## STEP 7 — OUTPUT FORMAT
+
+Return:
+
+1️⃣ Summary Risk Assessment  
+2️⃣ Calculations & Capacity Findings  
+3️⃣ Recommended Strategy  
+4️⃣ Safe Execution Commands  
+5️⃣ Monitoring Checklist  
+6️⃣ Open Questions (if needed)  
+
+Keep output structured and operational.
