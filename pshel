@@ -1,66 +1,142 @@
 #!/bin/bash
 # ════════════════════════════════════════════════════════════════════════════════
-# db2_ecm_health_check_v2.sh
-# IBM FileNet / ECM 8.7.4 + Db2 LUW Health Check — Three-Expert Edition
+# db2_ecm_health_check.sh
+# IBM Content Manager / ECM — Db2 Health Check
+# Version: 1.0
 #
-# Expert perspectives woven throughout:
-#   [DB2]  Db2 LUW DBA — config, tuning, storage, HA
-#   [ECM]  IBM ECM 8.7.4 specialist — schema patterns, workload, known pain points
-#   [PE]   Prompt Engineer — structures output for maximum Claude reasoning quality
+# USAGE:
+#   ./db2_ecm_health_check.sh              # weekly mode (default)
+#   ./db2_ecm_health_check.sh --overall    # full stats picture
+#   ./db2_ecm_health_check.sh --cron       # weekly, suppress progress to stderr
 #
-# Output files:
-#   db2_ecm_health_report.txt   — full raw data report
-#   claude_ecm_prompt.md        — structured prompt to paste into Claude
-#   verification_report.txt     — three-expert verification checklist
+# MODES:
+#   weekly (default)
+#     Incident and trend check. Run regularly or from cron.
+#     Collects: active lock waits, long transactions, log utilisation,
+#               tablespace totals, backup timestamps, SA MP state, swap.
+#     Runtime:  ~2-5 min for an 8-DB ICM stack.
+#     Best LLM: Gemini Flash (Opus if incidents found)
 #
-# Requirements: Run as Db2 instance owner (or user with SYSMON/SYSCTRL authority)
-# Tested against: Db2 LUW 11.5.x, RHEL 8.x, FileNet P8 / ECM 8.7.4
+#   overall (--overall)
+#     Full statistical picture. Run periodically or when something looks wrong.
+#     Adds: catalog statistics, top tables, stale stats, index health,
+#           top SQL, HADR detail, memory pools.
+#     Runtime:  ~15-20 min for an 8-DB ICM stack.
+#     Best LLM: GPT-4o / Gemini Pro
+#
+# OUTPUT FILES (written to current directory):
+#   <mode>_report_<ts>.txt     Raw collected Db2 data
+#   <mode>_prompt_<ts>.md      Paste into GitHub Copilot — no edits needed
+#   <mode>_verify_<ts>.txt     Expert checklist + LLM recommendation
+#
+# ASSUMPTIONS:
+#   Nothing about DB names, schemas, or table structure.
+#   All classification done by the LLM from collected evidence.
+#
+# PERMISSIONS:
+#   Db2 instance owner, or SYSMON + SYSCTRL authority.
+#   SA MP tools (lssam) require rsct group membership or root.
+#
+# COMPATIBILITY:
+#   Db2 LUW 11.1+, RHEL 8.x
 # ════════════════════════════════════════════════════════════════════════════════
 
-set -uo pipefail
+export LC_ALL=C
+export LANG=C
+set -euo pipefail
 
-# ── Output files ─────────────────────────────────────────────────────────────
-REPORT="db2_ecm_health_report.txt"
-PROMPT_MD="claude_ecm_prompt.md"
-VERIFY="verification_report.txt"
+# ── Arguments ─────────────────────────────────────────────────────────────────
+MODE="weekly"
+CRON_MODE=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --overall) MODE="overall" ;;
+    --cron)    CRON_MODE=true ;;
+    --weekly)  MODE="weekly"  ;;
+    *)
+      echo "Usage: $0 [--overall] [--cron]" >&2
+      exit 1
+      ;;
+  esac
+done
+
+# ── Output filenames ──────────────────────────────────────────────────────────
 RUN_TS=$(date '+%Y-%m-%d_%H%M%S')
+HOST=$(hostname -s 2>/dev/null || hostname)
+SCRIPT_START=$(date +%s)
 
-> "$REPORT"
-> "$PROMPT_MD"
-> "$VERIFY"
+REPORT="${MODE}_report_${RUN_TS}.txt"
+PROMPT_MD="${MODE}_prompt_${RUN_TS}.md"
+VERIFY="${MODE}_verify_${RUN_TS}.txt"
 
-# ── Logging helpers ───────────────────────────────────────────────────────────
-log()    { echo "$*" >> "$REPORT"; }
-section(){ echo "" >> "$REPORT"; echo "══════════════════════════════════════════════════════════" >> "$REPORT"; echo "  $*" >> "$REPORT"; echo "══════════════════════════════════════════════════════════" >> "$REPORT"; }
-subsect(){ echo "" >> "$REPORT"; echo "--- $* ---" >> "$REPORT"; }
-blankln(){ echo "" >> "$REPORT"; }
+> "$REPORT"; > "$PROMPT_MD"; > "$VERIFY"
 
-# ── Pass/Fail table helper ────────────────────────────────────────────────────
-# Usage: pstatus "Label" "Pass|Fail|Warning|Partial|Unknown" "Critical|High|Medium|Low" "Comment"
-pstatus() {
-  printf "%-45s | %-8s | %-8s | %s\n" "$1" "$2" "$3" "$4" >> "$REPORT"
+# ── Progress ──────────────────────────────────────────────────────────────────
+progress() {
+  $CRON_MODE || echo "[$(date '+%H:%M:%S')] $*" >&2
 }
+progress "db2_ecm_health_check.sh  mode=${MODE}  host=${HOST}"
 
-# ── Safe integer test ─────────────────────────────────────────────────────────
-is_int() { [[ "$1" =~ ^[0-9]+$ ]]; }
-is_num() { [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]]; }
+# ── Report helpers ────────────────────────────────────────────────────────────
+log()     { echo "$*"                                                   >> "$REPORT"; }
+section() { echo ""                                                     >> "$REPORT"
+            echo "════════════════════════════════════════════════════" >> "$REPORT"
+            echo "  $*"                                                 >> "$REPORT"
+            echo "════════════════════════════════════════════════════" >> "$REPORT"; }
+subsect() { echo ""                                                     >> "$REPORT"
+            echo "--- $* ---"                                           >> "$REPORT"; }
+blankln() { echo ""                                                     >> "$REPORT"; }
+pstatus() { printf "%-52s | %-8s | %-8s | %s\n" "$1" "$2" "$3" "$4"   >> "$REPORT"; }
+
+# ── Verify helpers ────────────────────────────────────────────────────────────
+vlog()  { echo "$*"                                                     >> "$VERIFY"; }
+vsect() { echo ""                                                       >> "$VERIFY"
+          echo "════════════════════════════════════════════════════"   >> "$VERIFY"
+          echo "  $*"                                                   >> "$VERIFY"
+          echo "════════════════════════════════════════════════════"   >> "$VERIFY"; }
+
+# ── Guards ────────────────────────────────────────────────────────────────────
+is_int() { [[ "${1:-}" =~ ^[0-9]+$            ]]; }
+is_num() { [[ "${1:-}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; }
+is_overall() { [ "$MODE" = "overall" ]; }
+
+# ── Config value extractor (defined once) ─────────────────────────────────────
+_gv() { echo "$1" | grep "$2" | awk '{print $NF}'; }
+
+# ── Tracking arrays ───────────────────────────────────────────────────────────
+declare -A DB_CONNECT_STATUS
+declare -A DB_USED_GB       DB_TOTAL_GB
+declare -A DB_TABLE_COUNT   DB_SCHEMA_COUNT
+declare -A DB_MAX_CARD      DB_TOTAL_CARD
+declare -A DB_LOGFILSIZ     DB_LOGPRIMARY    DB_LOGSECOND
+declare -A DB_LOGARCHMETH1  DB_LOGARCHMETH2  DB_LOGARCHCOMPR
+declare -A DB_TRACKMOD      DB_HADR_SYNC     DB_HADR_ROLE
+declare -A DB_STMM          DB_LOCKTIMEOUT   DB_LOCKLIST    DB_MAXLOCKS
+declare -A DB_AUTOCOLLECT_STATS
+declare -A DB_LOG_USED_KB   DB_LOG_AVAIL_KB
+declare -A DB_LOCK_WAITS    DB_LONG_TXN_COUNT
+declare -A DB_CONNECT_COUNT DB_REORG_PENDING_COUNT
+declare -A DB_BACKUP_TS
 
 # ════════════════════════════════════════════════════════════════════════════════
 # SECTION 0 — HEADER
 # ════════════════════════════════════════════════════════════════════════════════
-section "Db2 + IBM ECM 8.7.4 Health Check Report"
-log "Run timestamp : $RUN_TS"
-log "Hostname      : $(hostname)"
-log "OS            : $(cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d= -f2 | tr -d '\"' || uname -r)"
-log "Run user      : $(whoami)"
-log "Script version: db2_ecm_health_check_v2.sh"
+section "IBM ECM Db2 Health Check  [${MODE}]"
+log "Timestamp  : $RUN_TS"
+log "Mode       : $MODE"
+log "Host       : $HOST"
+log "OS         : $(grep PRETTY_NAME /etc/os-release 2>/dev/null \
+                    | cut -d= -f2 | tr -d '"' || uname -r)"
+log "Kernel     : $(uname -r)"
+log "Run user   : $(whoami)"
 blankln
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SECTION 1 — ENVIRONMENT & Db2 AVAILABILITY
-# [DB2] Source profile correctly — tilde must expand via $HOME not literal ~/
+# SECTION 1 — ENVIRONMENT
 # ════════════════════════════════════════════════════════════════════════════════
-section "1. Environment & Db2 Availability"
+section "1. Environment"
+progress "Section 1: environment"
 
 PROFILE_SOURCED=false
 for prof in \
@@ -76,1172 +152,1030 @@ for prof in \
     break
   fi
 done
+$PROFILE_SOURCED || log "WARNING: No db2profile sourced — Db2 commands may fail"
 
-if ! $PROFILE_SOURCED; then
-  log "WARNING: No db2profile found. Db2 commands may fail."
-fi
-
-if ! which db2 >/dev/null 2>&1; then
-  log "CRITICAL: 'db2' not in PATH. Exiting."
+if ! command -v db2 >/dev/null 2>&1; then
+  log "CRITICAL: db2 not in PATH — cannot continue"
+  progress "FATAL: db2 not in PATH"
   exit 1
 fi
 
 subsect "Db2 Version"
-db2level 2>&1 | head -12 >> "$REPORT"
+db2level 2>&1 | head -6 >> "$REPORT"
 blankln
 
-# [DB2] Instance-level config — critical for connection pooling, parallelism, memory ceiling
-subsect "Database Manager Config (Instance Level)"
-db2 get dbm cfg 2>&1 | grep -iE \
-  'MAX_CONNECTIONS|MAX_COORDAGENTS|INTRA_PARALLEL|ASLHEAPSZ|SVCENAME|SHEAPTHRES|'\
-'SHEAPTHRES_SHR|FCM_NUM_BUFFERS|FCM_NUM_CHANNELS|AUTHENTICATION|SYSADM_GROUP|'\
-'DB2COMM|INDEXREC|HEALTH_MON|NUM_INITAGENTS|NUM_POOLAGENTS|MAXAGENTS|'\
-'RESYNC_INTERVAL|SPM_NAME|TRUST_ALLCLNTS|TRUST_CLNTAUTH' >> "$REPORT" 2>&1
+subsect "OS Memory and Swap"
+free -h 2>&1 >> "$REPORT" || true
+free -b 2>/dev/null | awk \
+  'NR==2{printf "RAM:  total=%s used=%s free=%s available=%s\n",$2,$3,$4,$7}
+   NR==3{printf "Swap: total=%s used=%s free=%s\n",$2,$3,$4}' \
+  >> "$REPORT" || true
+grep -iE 'MemTotal|MemFree|MemAvailable|SwapTotal|SwapFree|AnonHugePages' \
+  /proc/meminfo 2>/dev/null >> "$REPORT" || true
 blankln
 
-# [DB2] OS-level memory and swap — critical given observed 100% swap anomaly
-subsect "OS Memory & Swap"
-free -h 2>&1 >> "$REPORT" || log "(free command unavailable)"
-cat /proc/meminfo 2>/dev/null | grep -iE 'MemTotal|MemFree|MemAvailable|SwapTotal|SwapFree|Hugepage|AnonHugePages' >> "$REPORT" || true
+subsect "Transparent Huge Pages (THP)"
+grep -o '.*' /sys/kernel/mm/transparent_hugepage/enabled \
+  2>/dev/null >> "$REPORT" || log "(THP status unavailable)"
 blankln
 
-subsect "Transparent Huge Pages (THP) Status"
-# [DB2] IBM mandates THP=never for Db2 on Linux. ECM compound it further with high lock table usage.
-cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null >> "$REPORT" || log "(THP status unavailable)"
-blankln
-
-subsect "Db2 IPC / Shared Memory Segments"
-ipcs -m 2>/dev/null | head -20 >> "$REPORT" || log "(ipcs unavailable)"
+subsect "SA MP Cluster State"
+log "Two SA MP resource groups expected — one per RMDB cluster tier."
+if command -v lssam >/dev/null 2>&1; then
+  lssam 2>/dev/null >> "$REPORT" || log "(lssam returned non-zero)"
+elif command -v samctrl >/dev/null 2>&1; then
+  samctrl -s 2>/dev/null >> "$REPORT" || log "(samctrl returned non-zero)"
+else
+  log "(lssam/samctrl not in PATH)"
+fi
+ps -ef 2>/dev/null \
+  | grep -iE 'IBM\.ResourceManager|IBM\.Automation|rsct' \
+  | grep -v grep >> "$REPORT" || log "(No SA MP processes detected)"
+for sadir in /var/ct/cfg /var/ct/run /opt/rsct/bin; do
+  [ -d "$sadir" ] && log "SA MP dir present: $sadir" \
+                  || log "SA MP dir absent : $sadir"
+done
 blankln
 
 # ════════════════════════════════════════════════════════════════════════════════
 # SECTION 2 — DATABASE DISCOVERY
 # ════════════════════════════════════════════════════════════════════════════════
 section "2. Database Discovery"
+progress "Section 2: discovering databases"
 
 db2 list database directory 2>&1 >> "$REPORT"
-DBS=$(db2 list database directory 2>/dev/null | grep -i "Database name" | awk '{print $4}' | sort)
+DBS=$(db2 list database directory 2>/dev/null \
+  | grep -i "Database name" | awk '{print $4}' | LC_ALL=C sort || true)
 
-if [ -z "$DBS" ]; then
-  log "FATAL: No databases detected. Cannot continue."
+if [ -z "${DBS:-}" ]; then
+  log "FATAL: No databases found — cannot continue"
+  progress "FATAL: No databases discovered"
   exit 1
 fi
 
-log "Databases found: $DBS"
+DB_COUNT=$(echo "$DBS" | wc -w | tr -d ' ')
+log "Discovered: $DBS"
+log "Count     : $DB_COUNT"
 blankln
 
 # ════════════════════════════════════════════════════════════════════════════════
-# HELPER — LOGFILSIZ recommendation based on DB used size
-# [DB2] Sized for ECM 8.7.4: metadata-heavy, high-frequency small transactions,
-#       workflow engine, document ingestion bursts, no row deletes (append-only pattern)
+# SECTION 3 — INSTANCE CONFIG
 # ════════════════════════════════════════════════════════════════════════════════
-suggest_logfilsiz() {
-  # Returns recommended LOGFILSIZ in 4KB pages
-  # ECM workload inflates log pressure: add 25% buffer vs generic Db2 guidance
-  local gb="$1"
-  is_num "$gb" || { echo "0"; return; }
-  awk -v g="$gb" 'BEGIN {
-    if      (g <  50)  print 81920;   # ~320 MB: small ECM object stores
-    else if (g < 150)  print 163840;  # ~640 MB: mid-size
-    else if (g < 300)  print 262144;  # ~1 GB:   large metadata stores
-    else if (g < 600)  print 393216;  # ~1.5 GB: very large / multi-OS stores
-    else               print 524288;  # ~2 GB:   enterprise / consolidated stores
-  }'
-}
+section "3. Instance Config"
+progress "Section 3: instance config"
 
-suggest_logprimary() {
-  # ECM: LOGPRIMARY * LOGFILSIZ should cover peak ingestion burst (~2x average)
-  local gb="$1"
-  is_num "$gb" || { echo "0"; return; }
-  awk -v g="$gb" 'BEGIN {
-    if      (g <  50)  print 13;
-    else if (g < 150)  print 16;
-    else if (g < 300)  print 20;
-    else if (g < 600)  print 25;
-    else               print 30;
-  }'
-}
+db2 get dbm cfg 2>&1 | grep -iE \
+  'MAX_CONNECTIONS|MAX_COORDAGENTS|SHEAPTHRES_SHR|SHEAPTHRES|INTRA_PARALLEL' \
+  >> "$REPORT" 2>&1
+blankln
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SECTION 3 — PER-DATABASE COLLECTION
+# SECTION 4 — PER-DATABASE COLLECTION
+# weekly:  incidents + health signals
+# overall: everything weekly collects, plus catalog stats, top tables,
+#          stale stats, index health, top SQL, memory pools
 # ════════════════════════════════════════════════════════════════════════════════
-
-# Tracking variables for pass/fail and prompt summary
-declare -A DB_USED_GB
-declare -A DB_TOTAL_GB
-declare -A DB_LOGFILSIZ
-declare -A DB_LOGPRIMARY
-declare -A DB_LOGSECOND
-declare -A DB_LOGARCHMETH1
-declare -A DB_LOGARCHMETH2
-declare -A DB_LOGARCHCOMPR
-declare -A DB_TRACKMOD
-declare -A DB_HADR_SYNC
-declare -A DB_STMM
-declare -A DB_AUTOCOLLECT_STATS
-declare -A DB_LOG_USED_KB
-declare -A DB_LOG_AVAIL_KB
-declare -A DB_LOCKTIMEOUT
-declare -A DB_DEADLOCK_CHK
-declare -A DB_LOCKLIST
-declare -A DB_MAXLOCKS
-declare -A DB_LAST_BACKUP
-declare -A DB_REORG_PENDING_COUNT
-declare -A DB_LOCK_WAITS
-declare -A DB_CONNECT_COUNT
-declare -A DB_LONG_TXN_COUNT
-declare -A DB_ECM_SCHEMAS
+section "4. Per-Database Collection"
 
 for DB in $DBS; do
 
-  section "Database: $DB"
+  DB_START=$(date +%s)
+  progress "[$DB] Starting"
+  section "DATABASE: $DB"
 
+  # ── Connect ────────────────────────────────────────────────────────────────
   db2 connect to "$DB" >> "$REPORT" 2>&1
   rc=$?
   if [ $rc -ne 0 ]; then
     log "CONNECT FAILED (rc=$rc) — skipping $DB"
+    DB_CONNECT_STATUS[$DB]="FAILED"
+    db2 terminate >/dev/null 2>&1 || true
+    progress "[$DB] CONNECT FAILED"
     continue
   fi
+  DB_CONNECT_STATUS[$DB]="CONNECTED"
 
-  # ── 3a. Database configuration ────────────────────────────────────────────
-  subsect "Database Config (db cfg)"
-  # [DB2] All parameters relevant to ECM production: logging, HA, maintenance, memory, locking
-  db2 get db cfg for "$DB" 2>&1 | grep -iE \
-    'LOGFILSIZ|LOGPRIMARY|LOGSECOND|LOGARCHMETH|LOGARCHCOMPR|FAILARCHPATH|'\
-'LOGPATH|NEWLOGPATH|MIRRORLOGPATH|HADR_DB_ROLE|HADR_LOCAL|HADR_REMOTE|'\
-'HADR_SYNC_MODE|HADR_TIMEOUT|HADR_PEER_WINDOW|AUTO_MAINT|AUTO_DB_BACKUP|'\
-'AUTO_TBL_MAINT|AUTO_RUNSTATS|AUTO_REORG|TRACKMOD|SELF_TUNING_MEM|'\
-'DATABASE_MEMORY|SHEAPTHRES_SHR|LOCKTIMEOUT|DLCHKTIME|LOCKLIST|MAXLOCKS|'\
-'REC_HIS_RETENTN|AUTO_DEL_REC_OBJ|NUM_LOG_SPAN|SOFTMAX|MINCOMMIT|'\
-'CHNGPGS_THRESH|LOGINDEXBUILD|STAT_HEAP_SZ|CATALOGCACHE_SZ|'\
-'PCKCACHESZ|STMTHEAP|APPLHEAPSZ|SEQDETECT|DFT_DEGREE|'\
-'DBHEAP|CATALOGCACHE_SZ|UTIL_HEAP_SZ' >> "$REPORT" 2>&1
+  # ── 4a. DB Config ─────────────────────────────────────────────────────────
+  progress "[$DB] Config"
+  subsect "Database Config"
+  _cfg_out=$(db2 get db cfg for "$DB" 2>/dev/null)
+  echo "$_cfg_out" | grep -iE \
+    'LOGFILSIZ|LOGPRIMARY|LOGSECOND|LOGARCHMETH|LOGARCHCOMPR|'\
+    'HADR_SYNC_MODE|HADR_DB_ROLE|AUTO_RUNSTATS|TRACKMOD|LOCKTIMEOUT|'\
+    'SELF_TUNING_MEM|LOGPATH' >> "$REPORT" 2>&1
   blankln
 
-  # Capture key values for pass/fail tracking
-  _logfilsiz=$(db2 get db cfg for "$DB" 2>/dev/null | grep "Log file size" | awk '{print $NF}')
-  _logprimary=$(db2 get db cfg for "$DB" 2>/dev/null | grep "Number of primary log files" | awk '{print $NF}')
-  _logsecond=$(db2 get db cfg for "$DB" 2>/dev/null | grep "Number of secondary log files" | awk '{print $NF}')
-  _archmeth1=$(db2 get db cfg for "$DB" 2>/dev/null | grep "LOGARCHMETH1" | awk '{print $NF}')
-  _archmeth2=$(db2 get db cfg for "$DB" 2>/dev/null | grep "LOGARCHMETH2" | awk '{print $NF}')
-  _archcompr=$(db2 get db cfg for "$DB" 2>/dev/null | grep "LOGARCHCOMPR1" | awk '{print $NF}')
-  _trackmod=$(db2 get db cfg for "$DB" 2>/dev/null | grep "Track modified pages" | awk '{print $NF}')
-  _hadr_sync=$(db2 get db cfg for "$DB" 2>/dev/null | grep "HADR_SYNC_MODE" | awk '{print $NF}')
-  _stmm=$(db2 get db cfg for "$DB" 2>/dev/null | grep "Self tuning memory" | awk '{print $NF}')
-  _locktimeout=$(db2 get db cfg for "$DB" 2>/dev/null | grep "Lock timeout" | awk '{print $NF}')
-  _dlchktime=$(db2 get db cfg for "$DB" 2>/dev/null | grep "Changed pages threshold" | awk '{print $NF}' || echo "UNKNOWN")
-  _locklist=$(db2 get db cfg for "$DB" 2>/dev/null | grep "Max storage for lock list" | awk '{print $NF}')
-  _maxlocks=$(db2 get db cfg for "$DB" 2>/dev/null | grep "Percent. of lock lists per application" | awk '{print $NF}')
-  _autocollect=$(db2 get db cfg for "$DB" 2>/dev/null | grep "AUTO_RUNSTATS" | awk '{print $NF}')
+  # Extract tracked values
+  _lf=$(_gv "$_cfg_out" 'Log file size');           DB_LOGFILSIZ[$DB]="${_lf:-UNKNOWN}"
+  _lp=$(_gv "$_cfg_out" 'Number of primary log');   DB_LOGPRIMARY[$DB]="${_lp:-UNKNOWN}"
+  _ls=$(_gv "$_cfg_out" 'Number of secondary log'); DB_LOGSECOND[$DB]="${_ls:-UNKNOWN}"
+  _a1=$(_gv "$_cfg_out" 'LOGARCHMETH1');            DB_LOGARCHMETH1[$DB]="${_a1:-UNKNOWN}"
+  _a2=$(_gv "$_cfg_out" 'LOGARCHMETH2');            DB_LOGARCHMETH2[$DB]="${_a2:-UNKNOWN}"
+  _ac=$(_gv "$_cfg_out" 'LOGARCHCOMPR1');           DB_LOGARCHCOMPR[$DB]="${_ac:-UNKNOWN}"
+  _tm=$(_gv "$_cfg_out" 'Track modified pages');    DB_TRACKMOD[$DB]="${_tm:-UNKNOWN}"
+  _hs=$(_gv "$_cfg_out" 'HADR_SYNC_MODE');          DB_HADR_SYNC[$DB]="${_hs:-NOT_CONFIGURED}"
+  _hr=$(_gv "$_cfg_out" 'HADR_DB_ROLE');            DB_HADR_ROLE[$DB]="${_hr:-UNKNOWN}"
+  _st=$(_gv "$_cfg_out" 'Self tuning memory');      DB_STMM[$DB]="${_st:-UNKNOWN}"
+  _lo=$(_gv "$_cfg_out" 'Lock timeout');            DB_LOCKTIMEOUT[$DB]="${_lo:-UNKNOWN}"
+  _ll=$(_gv "$_cfg_out" 'Max storage for lock');    DB_LOCKLIST[$DB]="${_ll:-UNKNOWN}"
+  _ml=$(_gv "$_cfg_out" 'Percent. of lock lists');  DB_MAXLOCKS[$DB]="${_ml:-UNKNOWN}"
+  _ar=$(_gv "$_cfg_out" 'AUTO_RUNSTATS');           DB_AUTOCOLLECT_STATS[$DB]="${_ar:-UNKNOWN}"
 
-  DB_LOGFILSIZ[$DB]="${_logfilsiz:-UNKNOWN}"
-  DB_LOGPRIMARY[$DB]="${_logprimary:-UNKNOWN}"
-  DB_LOGSECOND[$DB]="${_logsecond:-UNKNOWN}"
-  DB_LOGARCHMETH1[$DB]="${_archmeth1:-UNKNOWN}"
-  DB_LOGARCHMETH2[$DB]="${_archmeth2:-UNKNOWN}"
-  DB_LOGARCHCOMPR[$DB]="${_archcompr:-UNKNOWN}"
-  DB_TRACKMOD[$DB]="${_trackmod:-UNKNOWN}"
-  DB_HADR_SYNC[$DB]="${_hadr_sync:-NOT_CONFIGURED}"
-  DB_STMM[$DB]="${_stmm:-UNKNOWN}"
-  DB_LOCKTIMEOUT[$DB]="${_locktimeout:-UNKNOWN}"
-  DB_LOCKLIST[$DB]="${_locklist:-UNKNOWN}"
-  DB_MAXLOCKS[$DB]="${_maxlocks:-UNKNOWN}"
-  DB_AUTOCOLLECT_STATS[$DB]="${_autocollect:-UNKNOWN}"
+  # ── 4b. Tablespace sizing ─────────────────────────────────────────────────
+  progress "[$DB] Tablespace sizes"
+  subsect "Tablespace Sizing"
 
-  # ── 3b. Storage sizing ────────────────────────────────────────────────────
-  subsect "Database Size (MON_GET_TABLESPACE)"
-  db2 -x "SELECT 
-    TBSP_NAME,
-    TBSP_TYPE,
-    TBSP_CONTENT_TYPE,
-    TBSP_STATE,
-    ROUND(TBSP_TOTAL_SIZE_KB/1024.0/1024.0, 2) AS total_gb,
-    ROUND(TBSP_USED_SIZE_KB/1024.0/1024.0, 2)  AS used_gb,
-    ROUND((TBSP_TOTAL_SIZE_KB - TBSP_USED_SIZE_KB)/1024.0/1024.0, 2) AS free_gb,
-    ROUND((TBSP_TOTAL_SIZE_KB - TBSP_USED_SIZE_KB) * 100.0 / TBSP_TOTAL_SIZE_KB, 1) AS free_pct,
-    TBSP_AUTO_RESIZE_ENABLED,
-    TBSP_MAX_SIZE
-  FROM TABLE(MON_GET_TABLESPACE(NULL, -2))
-  ORDER BY total_gb DESC" >> "$REPORT" 2>&1
+  if is_overall; then
+    db2 -x "SELECT
+      TBSP_NAME, TBSP_TYPE, TBSP_STATE,
+      ROUND(TBSP_TOTAL_SIZE_KB/1024.0/1024.0,2)                        AS total_gb,
+      ROUND(TBSP_USED_SIZE_KB/1024.0/1024.0,2)                         AS used_gb,
+      ROUND((TBSP_TOTAL_SIZE_KB-TBSP_USED_SIZE_KB)/1024.0/1024.0,2)    AS free_gb,
+      ROUND((TBSP_TOTAL_SIZE_KB-TBSP_USED_SIZE_KB)*100.0
+        /NULLIF(TBSP_TOTAL_SIZE_KB,0),1)                               AS free_pct,
+      TBSP_AUTO_RESIZE_ENABLED
+    FROM TABLE(MON_GET_TABLESPACE(NULL,-2))
+    ORDER BY total_gb DESC" >> "$REPORT" 2>&1
+  else
+    # weekly: totals + any abnormal state
+    db2 -x "SELECT
+      ROUND(SUM(TBSP_TOTAL_SIZE_KB)/1024.0/1024.0,2) AS total_alloc_gb,
+      ROUND(SUM(TBSP_USED_SIZE_KB)/1024.0/1024.0,2)  AS total_used_gb,
+      ROUND((SUM(TBSP_TOTAL_SIZE_KB)-SUM(TBSP_USED_SIZE_KB))*100.0
+        /NULLIF(SUM(TBSP_TOTAL_SIZE_KB),0),1)         AS free_pct
+    FROM TABLE(MON_GET_TABLESPACE(NULL,-2))" >> "$REPORT" 2>&1
+    db2 -x "SELECT TBSP_NAME, TBSP_STATE
+      FROM TABLE(MON_GET_TABLESPACE(NULL,-2))
+      WHERE TBSP_STATE <> 0" >> "$REPORT" 2>&1 \
+        || log "(All tablespaces normal state)"
+  fi
 
-  subsect "Database Totals"
-  db2 -x "SELECT 
-    ROUND(SUM(TBSP_TOTAL_SIZE_KB)/1024.0/1024.0, 2) AS total_allocated_gb,
-    ROUND(SUM(TBSP_USED_SIZE_KB)/1024.0/1024.0, 2)  AS total_used_gb
-  FROM TABLE(MON_GET_TABLESPACE(NULL, -2))" >> "$REPORT" 2>&1
-
-  # Extract scalars for downstream logic — use awk on column position to avoid alias/grep fragility
-  _used_gb=$(db2 -x "SELECT CHAR(ROUND(SUM(TBSP_USED_SIZE_KB)/1024.0/1024.0,2)) FROM TABLE(MON_GET_TABLESPACE(NULL,-2))" 2>/dev/null | awk 'NR==1{gsub(/[^0-9.]/,"",$1); if($1~/^[0-9]/) print $1}')
-  _total_gb=$(db2 -x "SELECT CHAR(ROUND(SUM(TBSP_TOTAL_SIZE_KB)/1024.0/1024.0,2)) FROM TABLE(MON_GET_TABLESPACE(NULL,-2))" 2>/dev/null | awk 'NR==1{gsub(/[^0-9.]/,"",$1); if($1~/^[0-9]/) print $1}')
-  DB_USED_GB[$DB]="${_used_gb:-UNKNOWN}"
-  DB_TOTAL_GB[$DB]="${_total_gb:-UNKNOWN}"
-
-  log "Captured: used=${DB_USED_GB[$DB]} GB, total=${DB_TOTAL_GB[$DB]} GB"
-
-  # ── 3c. Tablespace fragmentation (high free space = reorg candidate) ─────
-  subsect "Tablespaces with >20% Free Space (Reorg / Over-allocation Candidates)"
-  # [ECM] ECM never deletes rows — tablespaces accumulate pseudo-free space after
-  # workflow completions and document soft-deletes. This identifies reorg candidates.
-  db2 -x "SELECT 
-    TBSP_NAME,
-    ROUND(TBSP_USED_SIZE_KB/1024.0/1024.0,2)  AS used_gb,
-    ROUND((TBSP_TOTAL_SIZE_KB - TBSP_USED_SIZE_KB)/1024.0/1024.0,2) AS free_gb,
-    ROUND((TBSP_TOTAL_SIZE_KB - TBSP_USED_SIZE_KB)*100.0/TBSP_TOTAL_SIZE_KB,1) AS free_pct
-  FROM TABLE(MON_GET_TABLESPACE(NULL,-2))
-  WHERE TBSP_TOTAL_SIZE_KB > 0
-    AND (TBSP_TOTAL_SIZE_KB - TBSP_USED_SIZE_KB)*100.0/TBSP_TOTAL_SIZE_KB > 20
-  ORDER BY free_pct DESC" >> "$REPORT" 2>&1
+  _ug=$(db2 -x "SELECT CHAR(ROUND(SUM(TBSP_USED_SIZE_KB)/1024.0/1024.0,2)) \
+    FROM TABLE(MON_GET_TABLESPACE(NULL,-2))" 2>/dev/null \
+    | awk 'NR==1{gsub(/[^0-9.]/,"",$1); if($1~/^[0-9]/) print $1}')
+  _tg=$(db2 -x "SELECT CHAR(ROUND(SUM(TBSP_TOTAL_SIZE_KB)/1024.0/1024.0,2)) \
+    FROM TABLE(MON_GET_TABLESPACE(NULL,-2))" 2>/dev/null \
+    | awk 'NR==1{gsub(/[^0-9.]/,"",$1); if($1~/^[0-9]/) print $1}')
+  DB_USED_GB[$DB]="${_ug:-UNKNOWN}"
+  DB_TOTAL_GB[$DB]="${_tg:-UNKNOWN}"
+  log "Size: used=${DB_USED_GB[$DB]} GB  allocated=${DB_TOTAL_GB[$DB]} GB"
   blankln
 
-  # ── 3d. Top tables by physical size ──────────────────────────────────────
-  subsect "Top 15 Largest Tables (Physical Size)"
-  # [ECM] Watch for: DOCVERSION, OBJECT, QUEUEITEM, ROSIDMAP, SYNCTARGET, 
-  #       AUDIT_*, workflow roster tables — these grow unboundedly in ECM 8.7.4
-  db2 -x "SELECT 
-    TABSCHEMA,
-    TABNAME,
-    CARD AS row_count,
-    ROUND((DATA_OBJECT_P_SIZE + INDEX_OBJECT_P_SIZE + LONG_OBJECT_P_SIZE +
-           LOB_OBJECT_P_SIZE + XML_OBJECT_P_SIZE)/1024.0/1024.0, 3) AS total_gb,
-    ROUND(DATA_OBJECT_P_SIZE/1024.0/1024.0, 3)  AS data_gb,
-    ROUND(INDEX_OBJECT_P_SIZE/1024.0/1024.0, 3) AS idx_gb,
-    REORG_PENDING
-  FROM SYSIBMADM.ADMINTABINFO
-  WHERE TABSCHEMA NOT LIKE 'SYS%'
-  ORDER BY total_gb DESC
-  FETCH FIRST 15 ROWS ONLY" >> "$REPORT" 2>&1
+  # ── 4c. Catalog stats — overall only ─────────────────────────────────────
+  if is_overall; then
+    progress "[$DB] Catalog stats"
+    subsect "Schema and Table Statistics"
+
+    db2 -x "SELECT SCHEMANAME, COUNT(*) AS table_count
+      FROM SYSCAT.TABLES WHERE TYPE='T'
+      GROUP BY SCHEMANAME ORDER BY table_count DESC
+      FETCH FIRST 20 ROWS ONLY" >> "$REPORT" 2>&1
+
+    db2 -x "SELECT
+      COUNT(*)                                           AS total_user_tables,
+      SUM(CARD)                                         AS total_rows_all_tables,
+      MAX(CARD)                                         AS largest_table_rows,
+      SUM(CASE WHEN CARD = 0       THEN 1 ELSE 0 END)  AS empty_tables,
+      SUM(CASE WHEN CARD > 1000000 THEN 1 ELSE 0 END)  AS tables_over_1m_rows
+    FROM SYSCAT.TABLES
+    WHERE TYPE='T' AND SCHEMANAME NOT LIKE 'SYS%'" >> "$REPORT" 2>&1
+
+    _tc=$(db2 -x "SELECT CHAR(COUNT(*)) FROM SYSCAT.TABLES \
+      WHERE TYPE='T' AND SCHEMANAME NOT LIKE 'SYS%'" 2>/dev/null \
+      | awk 'NR==1{gsub(/[^0-9]/,"",$1); print $1+0}')
+    _sc=$(db2 -x "SELECT CHAR(COUNT(DISTINCT SCHEMANAME)) FROM SYSCAT.TABLES \
+      WHERE TYPE='T' AND SCHEMANAME NOT LIKE 'SYS%'" 2>/dev/null \
+      | awk 'NR==1{gsub(/[^0-9]/,"",$1); print $1+0}')
+    _mc=$(db2 -x "SELECT CHAR(MAX(CARD)) FROM SYSCAT.TABLES \
+      WHERE TYPE='T' AND SCHEMANAME NOT LIKE 'SYS%'" 2>/dev/null \
+      | awk 'NR==1{gsub(/[^0-9]/,"",$1); print $1+0}')
+    _totc=$(db2 -x "SELECT CHAR(COALESCE(SUM(CARD),0)) FROM SYSCAT.TABLES \
+      WHERE TYPE='T' AND SCHEMANAME NOT LIKE 'SYS%'" 2>/dev/null \
+      | awk 'NR==1{gsub(/[^0-9]/,"",$1); print $1+0}')
+    DB_TABLE_COUNT[$DB]="${_tc:-0}";  DB_SCHEMA_COUNT[$DB]="${_sc:-0}"
+    DB_MAX_CARD[$DB]="${_mc:-0}";     DB_TOTAL_CARD[$DB]="${_totc:-0}"
+    log "Tables=${DB_TABLE_COUNT[$DB]} Schemas=${DB_SCHEMA_COUNT[$DB]}"
+    log "Largest=${DB_MAX_CARD[$DB]} rows  Total=${DB_TOTAL_CARD[$DB]} rows"
+    blankln
+
+    subsect "Top 20 Tables by Physical Size"
+    db2 -x "SELECT
+      TABSCHEMA, TABNAME, CARD AS row_count,
+      ROUND((DATA_OBJECT_P_SIZE+INDEX_OBJECT_P_SIZE+LONG_OBJECT_P_SIZE+
+             LOB_OBJECT_P_SIZE+XML_OBJECT_P_SIZE)/1024.0/1024.0,3) AS total_gb,
+      REORG_PENDING, DATE(STATS_TIME) AS last_stats
+    FROM SYSIBMADM.ADMINTABINFO
+    WHERE TABSCHEMA NOT LIKE 'SYS%'
+    ORDER BY total_gb DESC
+    FETCH FIRST 20 ROWS ONLY" >> "$REPORT" 2>&1
+    blankln
+
+    subsect "Stale Statistics (>7 days, >100k rows)"
+    db2 -x "SELECT
+      TABSCHEMA, TABNAME, CARD,
+      DATE(STATS_TIME)                       AS last_stats,
+      DAYS(CURRENT_DATE) - DAYS(STATS_TIME)  AS days_old
+    FROM SYSCAT.TABLES
+    WHERE TABSCHEMA NOT LIKE 'SYS%' AND TYPE='T'
+      AND (STATS_TIME IS NULL OR STATS_TIME < CURRENT_TIMESTAMP - 7 DAYS)
+      AND CARD > 100000
+    ORDER BY CARD DESC FETCH FIRST 20 ROWS ONLY" >> "$REPORT" 2>&1
+    blankln
+
+    subsect "Indexes with Low Cluster Ratio (<80%, tables >500k rows)"
+    db2 -x "SELECT
+      I.TABSCHEMA, I.TABNAME, I.INDNAME, I.CLUSTERRATIO, T.CARD AS table_rows
+    FROM SYSCAT.INDEXES I
+    JOIN SYSCAT.TABLES T ON I.TABSCHEMA=T.TABSCHEMA AND I.TABNAME=T.TABNAME
+    WHERE I.TABSCHEMA NOT LIKE 'SYS%'
+      AND T.CARD > 500000 AND I.CLUSTERRATIO < 80 AND I.CLUSTERRATIO >= 0
+    ORDER BY T.CARD DESC FETCH FIRST 20 ROWS ONLY" >> "$REPORT" 2>&1
+    blankln
+
+  else
+    # weekly: total row count only (for parity check)
+    _totc=$(db2 -x "SELECT CHAR(COALESCE(SUM(CARD),0)) FROM SYSCAT.TABLES \
+      WHERE TYPE='T' AND SCHEMANAME NOT LIKE 'SYS%'" 2>/dev/null \
+      | awk 'NR==1{gsub(/[^0-9]/,"",$1); print $1+0}')
+    DB_TOTAL_CARD[$DB]="${_totc:-0}"
+    DB_TABLE_COUNT[$DB]="N/A"; DB_SCHEMA_COUNT[$DB]="N/A"; DB_MAX_CARD[$DB]="N/A"
+    log "Total rows (all tables): ${DB_TOTAL_CARD[$DB]}"
+    blankln
+  fi
+
+  # ── 4d. Reorg pending — all modes ─────────────────────────────────────────
+  progress "[$DB] Reorg pending"
+  subsect "Reorg Pending"
+  _rp=$(db2 -x "SELECT COUNT(*) FROM SYSIBMADM.ADMINTABINFO \
+    WHERE REORG_PENDING='Y' AND TABSCHEMA NOT LIKE 'SYS%'" 2>/dev/null \
+    | awk 'NR==1{gsub(/[^0-9]/,"",$1); print $1+0}')
+  DB_REORG_PENDING_COUNT[$DB]="${_rp:-0}"
+  log "Reorg pending: ${DB_REORG_PENDING_COUNT[$DB]} table(s)"
+  if [ "${DB_REORG_PENDING_COUNT[$DB]}" -gt 0 ]; then
+    db2 -x "SELECT TABSCHEMA, TABNAME, CARD
+      FROM SYSIBMADM.ADMINTABINFO
+      WHERE REORG_PENDING='Y' AND TABSCHEMA NOT LIKE 'SYS%'
+      ORDER BY CARD DESC" >> "$REPORT" 2>&1
+  fi
   blankln
 
-  # ── 3e. Reorg pending tables ──────────────────────────────────────────────
-  subsect "Tables with REORG_PENDING = YES"
-  # [ECM] ECM's append-only pattern causes index splits and overflow pages over time.
-  # Reorg_pending tables cause query plan degradation — optimizer can't use those indexes reliably.
-  _reorg_count=$(db2 -x "SELECT COUNT(*) FROM SYSIBMADM.ADMINTABINFO WHERE REORG_PENDING='Y' AND TABSCHEMA NOT LIKE 'SYS%'" 2>/dev/null | awk 'NR==1{gsub(/[^0-9]/,"",$1); print $1+0}')
-  DB_REORG_PENDING_COUNT[$DB]="${_reorg_count:-0}"
-  log "Tables with REORG_PENDING: ${DB_REORG_PENDING_COUNT[$DB]}"
-  db2 -x "SELECT TABSCHEMA, TABNAME, CARD, REORG_PENDING 
-    FROM SYSIBMADM.ADMINTABINFO 
-    WHERE REORG_PENDING='Y' AND TABSCHEMA NOT LIKE 'SYS%'
-    ORDER BY CARD DESC" >> "$REPORT" 2>&1
-  blankln
-
-  # ── 3f. Transaction log utilization ──────────────────────────────────────
-  subsect "Transaction Log Status (MON_GET_TRANSACTION_LOG)"
-  # [DB2] The most critical real-time check: active log space + HADR log gap.
-  # ECM ingestion bursts can exhaust active logs in minutes if undersized.
-  db2 -x "SELECT 
-    TOTAL_LOG_USED_KB,
-    TOTAL_LOG_AVAILABLE_KB,
-    ROUND(TOTAL_LOG_USED_KB * 100.0 / NULLIF(TOTAL_LOG_USED_KB + TOTAL_LOG_AVAILABLE_KB, 0), 1) AS log_used_pct,
-    NUM_LOG_SPAN,
-    LOG_HADR_WAITS_TOTAL,
-    LOG_HADR_WAIT_TIME,
-    CURRENT_ACTIVE_LOG,
-    APPLID_HOLDING_OLDEST_XACT
+  # ── 4e. Transaction log — all modes ───────────────────────────────────────
+  progress "[$DB] Transaction log"
+  subsect "Transaction Log Status"
+  db2 -x "SELECT
+    TOTAL_LOG_USED_KB, TOTAL_LOG_AVAILABLE_KB,
+    ROUND(TOTAL_LOG_USED_KB*100.0
+      /NULLIF(TOTAL_LOG_USED_KB+TOTAL_LOG_AVAILABLE_KB,0),1) AS log_used_pct,
+    NUM_LOG_SPAN, LOG_HADR_WAITS_TOTAL,
+    CURRENT_ACTIVE_LOG, APPLID_HOLDING_OLDEST_XACT
   FROM TABLE(MON_GET_TRANSACTION_LOG(-2))" >> "$REPORT" 2>&1
 
-  _log_used=$(db2 -x "SELECT CHAR(TOTAL_LOG_USED_KB) FROM TABLE(MON_GET_TRANSACTION_LOG(-2))" 2>/dev/null | awk 'NR==1{gsub(/[^0-9]/,"",$1); print $1+0}')
-  _log_avail=$(db2 -x "SELECT CHAR(TOTAL_LOG_AVAILABLE_KB) FROM TABLE(MON_GET_TRANSACTION_LOG(-2))" 2>/dev/null | awk 'NR==1{gsub(/[^0-9]/,"",$1); print $1+0}')
-  DB_LOG_USED_KB[$DB]="${_log_used:-0}"
-  DB_LOG_AVAIL_KB[$DB]="${_log_avail:-0}"
+  _lu=$(db2 -x "SELECT CHAR(TOTAL_LOG_USED_KB) \
+    FROM TABLE(MON_GET_TRANSACTION_LOG(-2))" 2>/dev/null \
+    | awk 'NR==1{gsub(/[^0-9]/,"",$1); print $1+0}')
+  _la=$(db2 -x "SELECT CHAR(TOTAL_LOG_AVAILABLE_KB) \
+    FROM TABLE(MON_GET_TRANSACTION_LOG(-2))" 2>/dev/null \
+    | awk 'NR==1{gsub(/[^0-9]/,"",$1); print $1+0}')
+  DB_LOG_USED_KB[$DB]="${_lu:-0}"; DB_LOG_AVAIL_KB[$DB]="${_la:-0}"
   blankln
 
-  # ── 3g. Lock activity ─────────────────────────────────────────────────────
-  subsect "Current Lock Waits (MON_GET_APPL_LOCKWAIT)"
-  # [ECM] Lock waits are the #1 performance killer in ECM. FileNet P8 uses
-  # optimistic locking at application level but Db2 row-level locks still contend
-  # heavily on DOCVERSION and workflow QUEUEITEM tables during batch ingestion.
-  db2 -x "SELECT 
-    AGENT_ID,
-    LOCK_OBJECT_TYPE,
-    LOCK_MODE,
-    LOCK_MODE_REQUESTED,
-    LOCK_WAIT_ELAPSED_TIME,
-    LOCK_STATUS,
-    SUBSTR(LOCK_NAME,1,20) AS lock_name_short
+  # ── 4f. Lock waits — all modes ────────────────────────────────────────────
+  progress "[$DB] Lock waits"
+  subsect "Active Lock Waits"
+  db2 -x "SELECT
+    AGENT_ID, LOCK_OBJECT_TYPE, LOCK_MODE, LOCK_MODE_REQUESTED,
+    LOCK_WAIT_ELAPSED_TIME, SUBSTR(LOCK_NAME,1,20) AS lock_name
   FROM TABLE(MON_GET_APPL_LOCKWAIT(NULL,-2))
   ORDER BY LOCK_WAIT_ELAPSED_TIME DESC
   FETCH FIRST 20 ROWS ONLY" >> "$REPORT" 2>&1
 
-  _lock_waits=$(db2 -x "SELECT CHAR(COUNT(*)) FROM TABLE(MON_GET_APPL_LOCKWAIT(NULL,-2))" 2>/dev/null | awk 'NR==1{gsub(/[^0-9]/,"",$1); print $1+0}')
-  DB_LOCK_WAITS[$DB]="${_lock_waits:-0}"
+  _lw=$(db2 -x "SELECT CHAR(COUNT(*)) \
+    FROM TABLE(MON_GET_APPL_LOCKWAIT(NULL,-2))" 2>/dev/null \
+    | awk 'NR==1{gsub(/[^0-9]/,"",$1); print $1+0}')
+  DB_LOCK_WAITS[$DB]="${_lw:-0}"
   blankln
 
-  # ── 3h. Long-running transactions ────────────────────────────────────────
-  subsect "Long-Running Transactions (>60 seconds)"
-  # [ECM] A hung ECM workflow step or failed Content Engine call can hold open
-  # transactions indefinitely, blocking log archiving and HADR log shipping.
-  db2 -x "SELECT 
+  # ── 4g. Long transactions — all modes ────────────────────────────────────
+  progress "[$DB] Long transactions"
+  subsect "Long-Running Transactions >60s"
+  db2 -x "SELECT
     APPLICATION_HANDLE,
     SUBSTR(APPLICATION_NAME,1,30) AS app_name,
-    SUBSTR(CLIENT_HOSTNAME,1,20) AS client_host,
-    UOW_ELAPSED_TIME_US / 1000000 AS elapsed_sec,
-    ROWS_MODIFIED,
-    ISOLATION_LEVEL,
-    LOCK_TIMEOUT_VAL
+    SUBSTR(CLIENT_HOSTNAME,1,20)  AS client_host,
+    UOW_ELAPSED_TIME_US/1000000  AS elapsed_sec,
+    ROWS_MODIFIED, ISOLATION_LEVEL
   FROM TABLE(MON_GET_UNIT_OF_WORK(NULL,-2))
   WHERE UOW_ELAPSED_TIME_US > 60000000
   ORDER BY UOW_ELAPSED_TIME_US DESC" >> "$REPORT" 2>&1
 
-  _long_txn=$(db2 -x "SELECT CHAR(COUNT(*)) FROM TABLE(MON_GET_UNIT_OF_WORK(NULL,-2)) WHERE UOW_ELAPSED_TIME_US > 60000000" 2>/dev/null | awk 'NR==1{gsub(/[^0-9]/,"",$1); print $1+0}')
-  DB_LONG_TXN_COUNT[$DB]="${_long_txn:-0}"
+  _lt=$(db2 -x "SELECT CHAR(COUNT(*)) \
+    FROM TABLE(MON_GET_UNIT_OF_WORK(NULL,-2)) \
+    WHERE UOW_ELAPSED_TIME_US > 60000000" 2>/dev/null \
+    | awk 'NR==1{gsub(/[^0-9]/,"",$1); print $1+0}')
+  DB_LONG_TXN_COUNT[$DB]="${_lt:-0}"
   blankln
 
-  # ── 3i. Active connections ────────────────────────────────────────────────
-  subsect "Active Connections by Application"
-  # [ECM] FileNet P8 CE uses JDBC connection pools. Saturated pools cause
-  # "connection refused" errors in ECM admin console. JNDI pool exhaustion
-  # appears as rapid connect/disconnect cycling here.
-  db2 -x "SELECT 
+  # ── 4h. Active connections — all modes ────────────────────────────────────
+  progress "[$DB] Connections"
+  subsect "Active Connections"
+  db2 -x "SELECT
     SUBSTR(APPLICATION_NAME,1,35) AS app_name,
-    COUNT(*) AS conn_count,
-    SUM(ROWS_READ) AS total_rows_read,
-    SUM(ROWS_MODIFIED) AS total_rows_modified
+    COUNT(*) AS conn_count
   FROM TABLE(MON_GET_CONNECTION(NULL,-2))
-  GROUP BY APPLICATION_NAME
-  ORDER BY conn_count DESC
-  FETCH FIRST 20 ROWS ONLY" >> "$REPORT" 2>&1
+  GROUP BY APPLICATION_NAME ORDER BY conn_count DESC
+  FETCH FIRST 15 ROWS ONLY" >> "$REPORT" 2>&1
 
-  _total_conns=$(db2 -x "SELECT CHAR(COUNT(*)) FROM TABLE(MON_GET_CONNECTION(NULL,-2))" 2>/dev/null | awk 'NR==1{gsub(/[^0-9]/,"",$1); print $1+0}')
-  DB_CONNECT_COUNT[$DB]="${_total_conns:-0}"
+  _cc=$(db2 -x "SELECT CHAR(COUNT(*)) \
+    FROM TABLE(MON_GET_CONNECTION(NULL,-2))" 2>/dev/null \
+    | awk 'NR==1{gsub(/[^0-9]/,"",$1); print $1+0}')
+  DB_CONNECT_COUNT[$DB]="${_cc:-0}"
   blankln
 
-  # ── 3j. Top SQL by execution time ────────────────────────────────────────
-  subsect "Top 10 SQL Statements by Total Execution Time (Package Cache)"
-  # [ECM] ECM 8.7.4 generates heavy repeated queries against DOCVERSION, OBJECT,
-  # and QUEUEITEM. Slow SQL here directly maps to ECM user latency.
-  db2 -x "SELECT 
-    ROUND(TOTAL_EXEC_TIME/1000.0, 2)   AS total_exec_ms,
-    NUM_EXECUTIONS,
-    ROUND(AVG_EXEC_TIME/1000.0, 2)    AS avg_exec_ms,
-    ROWS_RETURNED,
-    STMT_SORTS,
-    SUBSTR(STMT_TEXT,1,120)            AS sql_snippet
-  FROM TABLE(MON_GET_PKG_CACHE_STMT(NULL,NULL,NULL,-2))
-  WHERE STMT_TYPE_ID = 5
-  ORDER BY TOTAL_EXEC_TIME DESC
-  FETCH FIRST 10 ROWS ONLY" >> "$REPORT" 2>&1
+  # ── 4i. Top SQL — overall only ────────────────────────────────────────────
+  if is_overall; then
+    progress "[$DB] Top SQL"
+    subsect "Top 10 SQL by Total Execution Time"
+    db2 -x "SELECT
+      ROUND(TOTAL_EXEC_TIME/1000.0,2) AS total_exec_ms,
+      NUM_EXECUTIONS,
+      ROUND(AVG_EXEC_TIME/1000.0,2)  AS avg_exec_ms,
+      ROWS_RETURNED,
+      SUBSTR(STMT_TEXT,1,120)         AS sql_snippet
+    FROM TABLE(MON_GET_PKG_CACHE_STMT(NULL,NULL,NULL,-2))
+    WHERE STMT_TYPE_ID=5
+    ORDER BY TOTAL_EXEC_TIME DESC
+    FETCH FIRST 10 ROWS ONLY" >> "$REPORT" 2>&1
+    blankln
+  fi
+
+  # ── 4j. HADR — all modes ─────────────────────────────────────────────────
+  progress "[$DB] HADR"
+  subsect "HADR Status (db2pd)"
+  db2pd -hadr -db "$DB" 2>/dev/null | head -60 >> "$REPORT" \
+    || log "(db2pd -hadr unavailable)"
   blankln
 
-  # ── 3k. Statistics health ─────────────────────────────────────────────────
-  subsect "Tables with Stale Statistics (STATS_TIME > 7 days or never collected)"
-  # [ECM] Auto-runstats may lag on very large ECM tables. Stale stats cause
-  # optimizer to choose nested-loop over hash join on DOCVERSION joins — catastrophic.
-  db2 -x "SELECT 
-    TABSCHEMA,
-    TABNAME,
-    CARD,
-    DATE(STATS_TIME) AS last_stats_date,
-    DAYS(CURRENT_DATE) - DAYS(STATS_TIME) AS days_since_stats
-  FROM SYSCAT.TABLES
-  WHERE TABSCHEMA NOT LIKE 'SYS%'
-    AND TYPE = 'T'
-    AND (STATS_TIME IS NULL OR STATS_TIME < CURRENT_TIMESTAMP - 7 DAYS)
-    AND CARD > 100000
-  ORDER BY CARD DESC
-  FETCH FIRST 20 ROWS ONLY" >> "$REPORT" 2>&1
+  # ── 4k. Memory pools — overall only ──────────────────────────────────────
+  if is_overall; then
+    progress "[$DB] Memory pools"
+    subsect "Memory Pool Allocation (db2pd -memsets)"
+    db2pd -memsets -db "$DB" 2>/dev/null | head -60 >> "$REPORT" \
+      || log "(db2pd -memsets unavailable)"
+    blankln
+  fi
+
+  # ── 4l. Backup history — all modes ───────────────────────────────────────
+  progress "[$DB] Backup history"
+  subsect "Backup History"
+  _hist_out=$(db2 "LIST HISTORY BACKUP ALL FOR $DB" 2>/dev/null || true)
+  echo "$_hist_out" \
+    | grep -iE "Backup|Start Time|End Time|Type|Status|Successful" \
+    | tail -40 >> "$REPORT" || true
+  _lbts=$(echo "$_hist_out" | grep "Start Time" | tail -1 \
+    | awk '{print $NF}' || true)
+  DB_BACKUP_TS[$DB]="${_lbts:-UNKNOWN}"
+  log "Last backup: ${DB_BACKUP_TS[$DB]}"
   blankln
 
-  # ── 3l. ECM Schema detection ──────────────────────────────────────────────
-  subsect "ECM Schema Detection"
-  # [ECM] Known ECM 8.7.4 schemas: GCD DB owner, object store schema(s), 
-  # workflow schema, ICMADMIN for legacy, FNBODY (deprecated in 8.7), 
-  # XDMS (if using extended document management)
-  db2 -x "SELECT SCHEMANAME, COUNT(*) AS table_count
-    FROM SYSCAT.TABLES
-    WHERE TYPE = 'T'
-    GROUP BY SCHEMANAME
-    ORDER BY table_count DESC
-    FETCH FIRST 20 ROWS ONLY" >> "$REPORT" 2>&1
-
-  _ecm_schemas=$(db2 -x "SELECT LISTAGG(SCHEMANAME, ',') WITHIN GROUP (ORDER BY SCHEMANAME) FROM (
-    SELECT DISTINCT SCHEMANAME FROM SYSCAT.TABLES WHERE TYPE='T' AND SCHEMANAME NOT LIKE 'SYS%'
-    FETCH FIRST 30 ROWS ONLY)" 2>/dev/null | awk 'NR==1{print $0}')
-  DB_ECM_SCHEMAS[$DB]="${_ecm_schemas:-UNKNOWN}"
-  blankln
-
-  # ── 3m. Index health ──────────────────────────────────────────────────────
-  subsect "Indexes with High CLUSTERRATIO Issues (<80% cluster) on Large Tables"
-  # [ECM] ECM 8.7.4 queries use range scans on DOCVERSION (by date, class, folder).
-  # Low cluster ratio forces random I/O, magnifying latency for document retrieval.
-  db2 -x "SELECT 
-    I.TABSCHEMA,
-    I.TABNAME,
-    I.INDNAME,
-    I.CLUSTERRATIO,
-    I.FULLKEYCARD,
-    T.CARD AS table_rows
-  FROM SYSCAT.INDEXES I
-  JOIN SYSCAT.TABLES T ON I.TABSCHEMA=T.TABSCHEMA AND I.TABNAME=T.TABNAME
-  WHERE I.TABSCHEMA NOT LIKE 'SYS%'
-    AND T.CARD > 500000
-    AND I.CLUSTERRATIO < 80
-    AND I.CLUSTERRATIO >= 0
-  ORDER BY T.CARD DESC
-  FETCH FIRST 20 ROWS ONLY" >> "$REPORT" 2>&1
-  blankln
-
-  # ── 3n. Backup history ────────────────────────────────────────────────────
-  subsect "Backup History (Last 7 Days)"
-  # [DB2] ECM 8.7.4 is not tolerant of data loss — GCD is single point of truth
-  # for all object store metadata. Missed backups are a Critical finding.
-  db2 "LIST HISTORY BACKUP ALL FOR $DB" 2>&1 | grep -E "Backup|Start|End|Type|Status|Location" | tail -50 >> "$REPORT"
-
-  _last_backup=$(db2 "LIST HISTORY BACKUP ALL FOR $DB" 2>/dev/null | grep "Start Time" | tail -1 | awk '{print $NF}' || echo "UNKNOWN")
-  DB_LAST_BACKUP[$DB]="${_last_backup:-UNKNOWN}"
-  blankln
-
-  # ── 3o. HADR status ───────────────────────────────────────────────────────
-  subsect "HADR Status Detail"
-  # [DB2+ECM] NEARSYNC is the correct mode for ECM — SYNC adds latency to every
-  # CE write commit. ASYNC risks data loss on failover which is unacceptable
-  # for ECM metadata consistency.
-  db2 get snapshot for database on "$DB" 2>/dev/null | \
-    grep -iE 'HADR|Standby|Primary|Log gap|Sync' >> "$REPORT" || \
-    log "(Snapshot unavailable — try: db2pd -hadr -db $DB)"
-  db2pd -hadr -db "$DB" 2>/dev/null | head -40 >> "$REPORT" || true
-  blankln
-
-  # ── 3p. Self-tuning memory detail ────────────────────────────────────────
-  subsect "Current Memory Pool Sizes (db2pd)"
-  # [DB2] STMM + swap anomaly: if SHEAPTHRES_SHR is unset or set too high,
-  # Db2 can allocate more shared memory than physical RAM, forcing OS swap.
-  # This is the likely cause of 100% swap with 24 GB free RAM.
-  db2pd -memsets -db "$DB" 2>/dev/null | head -60 >> "$REPORT" || \
-    log "(db2pd -memsets unavailable)"
-  blankln
-
-  db2 terminate >/dev/null 2>&1
-
-done  # end per-database loop
-
-# ════════════════════════════════════════════════════════════════════════════════
-# SECTION 4 — PASS / FAIL / WARNING SUMMARY TABLE
-# [PE] Structured machine-readable verdicts that Claude uses as reference anchors,
-#      but is instructed to validate rather than blindly accept.
-# ════════════════════════════════════════════════════════════════════════════════
-section "4. Pass / Fail / Warning Summary Table"
-
-printf "%-45s | %-8s | %-8s | %s\n" "Check Item" "Status" "Severity" "Comment" >> "$REPORT"
-printf "%-45s | %-8s | %-8s | %s\n" "---------------------------------------------" "--------" "--------" "-------" >> "$REPORT"
-
-# ── OS / Environment ─────────────────────────────────────────────────────────
-thp=$(cat /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || echo "unknown")
-if echo "$thp" | grep -q '\[never\]'; then
-  pstatus "Transparent Huge Pages" "Pass" "Low" "THP=never (correct for Db2)"
-else
-  pstatus "Transparent Huge Pages" "Fail" "High" "THP not set to never — IBM mandate for Db2+ECM. Current: $thp"
-fi
-
-swap_total=$(grep SwapTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
-swap_free=$(grep SwapFree /proc/meminfo 2>/dev/null | awk '{print $2}')
-if is_int "${swap_total:-0}" && is_int "${swap_free:-0}" && [ "${swap_total:-0}" -gt 0 ]; then
-  swap_used_pct=$(awk "BEGIN{printf \"%.0f\", (${swap_total}-${swap_free})*100/${swap_total}}")
-  if [ "$swap_used_pct" -gt 90 ]; then
-    pstatus "OS Swap Usage" "Fail" "Critical" "${swap_used_pct}% swap in use — likely Db2 STMM/SHEAPTHRES_SHR misconfiguration"
-  elif [ "$swap_used_pct" -gt 50 ]; then
-    pstatus "OS Swap Usage" "Warning" "High" "${swap_used_pct}% swap in use — investigate Db2 memory config"
-  else
-    pstatus "OS Swap Usage" "Pass" "Low" "${swap_used_pct}% swap used"
-  fi
-else
-  pstatus "OS Swap Usage" "Unknown" "High" "Could not determine swap usage"
-fi
-
-# ── Per-database checks ───────────────────────────────────────────────────────
-for DB in $DBS; do
-
-  used="${DB_USED_GB[$DB]:-UNKNOWN}"
-  sug_logfilsiz="0"
-  sug_logprimary="0"
-  if is_num "$used"; then
-    sug_logfilsiz=$(suggest_logfilsiz "$used")
-    sug_logprimary=$(suggest_logprimary "$used")
-  fi
-
-  # Log file size
-  cur_filsiz="${DB_LOGFILSIZ[$DB]:-0}"
-  if is_int "$cur_filsiz" && is_int "$sug_logfilsiz" && [ "$sug_logfilsiz" -gt 0 ]; then
-    if [ "$cur_filsiz" -ge "$sug_logfilsiz" ]; then
-      pstatus "[$DB] LOGFILSIZ" "Pass" "Low" "Current $cur_filsiz >= ECM-suggested $sug_logfilsiz pages"
-    elif [ "$cur_filsiz" -ge $((sug_logfilsiz * 6 / 10)) ]; then
-      pstatus "[$DB] LOGFILSIZ" "Warning" "Medium" "Current $cur_filsiz — ECM suggests $sug_logfilsiz pages; upgrade during window"
-    else
-      pstatus "[$DB] LOGFILSIZ" "Fail" "High" "Current $cur_filsiz pages — ECM requires ~$sug_logfilsiz; risk of log-full on ingestion burst"
-    fi
-  else
-    pstatus "[$DB] LOGFILSIZ" "Unknown" "High" "Could not determine (cur=$cur_filsiz, sug=$sug_logfilsiz)"
-  fi
-
-  # Primary log count
-  cur_primary="${DB_LOGPRIMARY[$DB]:-0}"
-  if is_int "$cur_primary" && is_int "$sug_logprimary" && [ "$sug_logprimary" -gt 0 ]; then
-    if [ "$cur_primary" -ge "$sug_logprimary" ]; then
-      pstatus "[$DB] LOGPRIMARY" "Pass" "Low" "Current $cur_primary >= ECM-suggested $sug_logprimary"
-    else
-      pstatus "[$DB] LOGPRIMARY" "Warning" "Medium" "Current $cur_primary — ECM suggests $sug_logprimary for burst headroom"
-    fi
-  else
-    pstatus "[$DB] LOGPRIMARY" "Unknown" "Medium" "cur=$cur_primary sug=$sug_logprimary"
-  fi
-
-  # Log archive method 1
-  am1="${DB_LOGARCHMETH1[$DB]:-UNKNOWN}"
-  if echo "$am1" | grep -qiE 'DISK:|VENDOR:|TSM:'; then
-    pstatus "[$DB] LOGARCHMETH1" "Pass" "Low" "Archive configured: $am1"
-  else
-    pstatus "[$DB] LOGARCHMETH1" "Fail" "Critical" "Log archiving NOT configured ($am1) — ECM backup/recovery broken"
-  fi
-
-  # Log archive method 2 (dual path)
-  am2="${DB_LOGARCHMETH2[$DB]:-UNKNOWN}"
-  if echo "$am2" | grep -qiE 'DISK:|VENDOR:|TSM:'; then
-    pstatus "[$DB] LOGARCHMETH2" "Pass" "Low" "Dual archive: $am2"
-  elif echo "$am1" | grep -qiE 'DISK:|VENDOR:|TSM:'; then
-    pstatus "[$DB] LOGARCHMETH2" "Warning" "High" "No dual path — single NAS failure = log gap, HADR fall-behind, potential data loss"
-  else
-    pstatus "[$DB] LOGARCHMETH2" "Fail" "Critical" "No archive paths at all"
-  fi
-
-  # Log compression
-  compr="${DB_LOGARCHCOMPR[$DB]:-UNKNOWN}"
-  if echo "$compr" | grep -qi 'ON'; then
-    pstatus "[$DB] Log Archive Compression" "Pass" "Low" "LOGARCHCOMPR=ON"
-  else
-    pstatus "[$DB] Log Archive Compression" "Fail" "Medium" "OFF — ECM log volumes are high; enable to reduce NAS pressure"
-  fi
-
-  # TRACKMOD (incremental backups)
-  track="${DB_TRACKMOD[$DB]:-UNKNOWN}"
-  if echo "$track" | grep -qi 'ON'; then
-    pstatus "[$DB] TRACKMOD (Incremental Backup)" "Pass" "Low" "ON"
-  else
-    pstatus "[$DB] TRACKMOD (Incremental Backup)" "Fail" "Medium" "OFF — ECM backup window 1-6AM only; incrementals reduce NAS I/O"
-  fi
-
-  # HADR sync mode
-  hadr="${DB_HADR_SYNC[$DB]:-NOT_CONFIGURED}"
-  case "$hadr" in
-    NEARSYNC) pstatus "[$DB] HADR Sync Mode" "Pass" "Low" "NEARSYNC — correct for ECM (low latency + durability balance)" ;;
-    SYNC)     pstatus "[$DB] HADR Sync Mode" "Warning" "Medium" "SYNC — safe but adds commit latency to every ECM write operation" ;;
-    ASYNC|SUPERASYNC) pstatus "[$DB] HADR Sync Mode" "Fail" "High" "$hadr — data loss on failover; unacceptable for ECM metadata integrity" ;;
-    NOT_CONFIGURED) pstatus "[$DB] HADR Sync Mode" "Unknown" "Medium" "HADR not detected — confirm if HA is via other means" ;;
-    *) pstatus "[$DB] HADR Sync Mode" "Unknown" "Medium" "Unexpected value: $hadr" ;;
-  esac
-
-  # STMM
-  stmm="${DB_STMM[$DB]:-UNKNOWN}"
-  if echo "$stmm" | grep -qi 'ON'; then
-    pstatus "[$DB] Self-Tuning Memory (STMM)" "Pass" "Low" "ON — but verify SHEAPTHRES_SHR cap given swap anomaly"
-  else
-    pstatus "[$DB] Self-Tuning Memory (STMM)" "Warning" "Medium" "OFF — manual memory sizing required; risk of imbalance"
-  fi
-
-  # Lock timeout
-  lto="${DB_LOCKTIMEOUT[$DB]:-UNKNOWN}"
-  if [ "$lto" = "-1" ] 2>/dev/null; then
-    pstatus "[$DB] Lock Timeout (LOCKTIMEOUT)" "Fail" "High" "-1 (never timeout) — ECM lock waits will cascade; set 30-120 seconds"
-  elif is_int "$lto" && [ "$lto" -gt 0 ] && [ "$lto" -le 120 ]; then
-    pstatus "[$DB] Lock Timeout (LOCKTIMEOUT)" "Pass" "Low" "${lto}s — within ECM-recommended range (30-120s)"
-  elif is_int "$lto" && [ "$lto" -gt 120 ]; then
-    pstatus "[$DB] Lock Timeout (LOCKTIMEOUT)" "Warning" "Medium" "${lto}s — too long; ECM users will hang during contention; reduce to 60-90s"
-  else
-    pstatus "[$DB] Lock Timeout (LOCKTIMEOUT)" "Unknown" "High" "Value: $lto"
-  fi
-
-  # Reorg pending
-  reorg="${DB_REORG_PENDING_COUNT[$DB]:-0}"
-  if [ "$reorg" -eq 0 ] 2>/dev/null; then
-    pstatus "[$DB] Reorg Pending Tables" "Pass" "Low" "None detected"
-  elif [ "$reorg" -le 5 ] 2>/dev/null; then
-    pstatus "[$DB] Reorg Pending Tables" "Warning" "Medium" "$reorg table(s) — schedule REORG during next maintenance window"
-  else
-    pstatus "[$DB] Reorg Pending Tables" "Fail" "High" "$reorg table(s) — ECM query plans degraded; prioritize REORG + RUNSTATS"
-  fi
-
-  # Lock waits
-  lw="${DB_LOCK_WAITS[$DB]:-0}"
-  if [ "$lw" -eq 0 ] 2>/dev/null; then
-    pstatus "[$DB] Current Lock Waits" "Pass" "Low" "None at collection time"
-  elif [ "$lw" -le 5 ] 2>/dev/null; then
-    pstatus "[$DB] Current Lock Waits" "Warning" "Medium" "$lw active — monitor for ECM workflow contention"
-  else
-    pstatus "[$DB] Current Lock Waits" "Fail" "High" "$lw active lock waits — likely ECM ingestion or workflow contention in progress"
-  fi
-
-  # Long transactions
-  lt="${DB_LONG_TXN_COUNT[$DB]:-0}"
-  if [ "$lt" -eq 0 ] 2>/dev/null; then
-    pstatus "[$DB] Long-Running Transactions (>60s)" "Pass" "Low" "None detected"
-  else
-    pstatus "[$DB] Long-Running Transactions (>60s)" "Fail" "High" "$lt found — blocking log archival and HADR shipping; investigate immediately"
-  fi
-
-  # Auto-runstats
-  ar="${DB_AUTOCOLLECT_STATS[$DB]:-UNKNOWN}"
-  if echo "$ar" | grep -qi 'ON'; then
-    pstatus "[$DB] AUTO_RUNSTATS" "Pass" "Low" "ON"
-  else
-    pstatus "[$DB] AUTO_RUNSTATS" "Fail" "High" "OFF — ECM query optimizer will use stale stats; enable or schedule manual RUNSTATS"
-  fi
-
-  # Log utilization
-  lu_kb="${DB_LOG_USED_KB[$DB]:-0}"
-  la_kb="${DB_LOG_AVAIL_KB[$DB]:-0}"
-  if is_int "$lu_kb" && is_int "$la_kb" && [ $((lu_kb + la_kb)) -gt 0 ]; then
-    lu_pct=$(awk "BEGIN{printf \"%.0f\", ${lu_kb}*100/(${lu_kb}+${la_kb})}")
-    if [ "$lu_pct" -lt 70 ]; then
-      pstatus "[$DB] Active Log Utilization" "Pass" "Low" "${lu_pct}% used"
-    elif [ "$lu_pct" -lt 85 ]; then
-      pstatus "[$DB] Active Log Utilization" "Warning" "High" "${lu_pct}% used — ECM burst could exhaust; review LOGPRIMARY+LOGSECOND"
-    else
-      pstatus "[$DB] Active Log Utilization" "Fail" "Critical" "${lu_pct}% used — near log-full; immediate risk of ECM transaction failures"
-    fi
-  else
-    pstatus "[$DB] Active Log Utilization" "Unknown" "High" "Could not determine log utilization"
-  fi
-
-  # Backup age
-  lb="${DB_LAST_BACKUP[$DB]:-UNKNOWN}"
-  pstatus "[$DB] Last Backup Timestamp" "Info" "Review" "Last backup: $lb — verify within 24h window"
-
-  # ECM Schemas detected
-  pstatus "[$DB] ECM Schemas Detected" "Info" "Low" "${DB_ECM_SCHEMAS[$DB]:-none detected}"
+  db2 terminate >/dev/null 2>&1 || true
+  DB_END=$(date +%s)
+  progress "[$DB] Done — $((DB_END - DB_START))s"
 
 done
 
+# ════════════════════════════════════════════════════════════════════════════════
+# SECTION 5 — CROSS-DATABASE ANALYSIS
+# ════════════════════════════════════════════════════════════════════════════════
+section "5. Cross-Database Analysis"
+progress "Section 5: cross-database"
+
+subsect "All Databases at a Glance"
+printf "%-12s | %-9s | %-9s | %-12s | %-10s | %-9s | %-22s | %s\n" \
+  "Database" "Used GB" "Alloc GB" "Total Rows" "Lock Waits" "Long Txns" "Last Backup" "Connect" \
+  >> "$REPORT"
+printf "%-12s | %-9s | %-9s | %-12s | %-10s | %-9s | %-22s | %s\n" \
+  "------------" "---------" "---------" "------------" "----------" "---------" "----------------------" "-------" \
+  >> "$REPORT"
+for DB in $DBS; do
+  printf "%-12s | %-9s | %-9s | %-12s | %-10s | %-9s | %-22s | %s\n" \
+    "$DB" \
+    "${DB_USED_GB[$DB]:-N/A}" \
+    "${DB_TOTAL_GB[$DB]:-N/A}" \
+    "${DB_TOTAL_CARD[$DB]:-N/A}" \
+    "${DB_LOCK_WAITS[$DB]:-N/A}" \
+    "${DB_LONG_TXN_COUNT[$DB]:-N/A}" \
+    "${DB_BACKUP_TS[$DB]:-N/A}" \
+    "${DB_CONNECT_STATUS[$DB]:-UNKNOWN}" >> "$REPORT"
+done
+blankln
+
+subsect "Row Count Parity (Replication Pair Consistency)"
+log "Replication pairs should have near-identical row counts."
+log "Divergence >2% = investigate.  >5% = replication likely broken."
+blankln
+for DB in $DBS; do
+  log "  $DB : rows=${DB_TOTAL_CARD[$DB]:-N/A}  used_gb=${DB_USED_GB[$DB]:-N/A}"
+done
+blankln
+
+subsect "Backup Timestamp Coordination"
+log "Coordinated pairs must be within 15 min of each other."
+log "Skew >15 min = unresolvable references on restore."
+blankln
+for DB in $DBS; do
+  log "  $DB : ${DB_BACKUP_TS[$DB]:-UNKNOWN}"
+done
 blankln
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SECTION 5 — BUILD CLAUDE PROMPT (claude_ecm_prompt.md)
-# [PE] Designed for maximum Claude reasoning quality:
-#   - Data-first: live report embedded as primary source
-#   - Verdicts-as-reference: pass/fail table is a CHECK, not a TRUTH
-#   - Chain-of-thought activated: "validate against raw data before concluding"
-#   - Domain context loaded: ECM 8.7.4 specifics so Claude doesn't reason generically
-#   - Output format specified to avoid rambling
-#   - Confidence tracking mandated: Claude must flag uncertainty
+# SECTION 6 — PASS / FAIL TABLE
 # ════════════════════════════════════════════════════════════════════════════════
+section "6. Pass / Fail / Warning Summary"
+progress "Section 6: pass/fail"
 
-cat > "$PROMPT_MD" << EOMD
-# Claude Analysis Prompt — IBM ECM 8.7.4 + Db2 LUW Health Review
+printf "%-52s | %-8s | %-8s | %s\n" \
+  "Check" "Status" "Severity" "Detail" >> "$REPORT"
+printf "%-52s | %-8s | %-8s | %s\n" \
+  "----------------------------------------------------" "--------" "--------" "------" \
+  >> "$REPORT"
+
+# THP
+thp=$(grep -o '.*' /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null \
+  || echo "unknown")
+if echo "$thp" | grep -q '\[never\]'; then
+  pstatus "THP setting" "Pass" "Low" "never"
+else
+  pstatus "THP setting" "Fail" "High" "NOT never — current: $thp"
+fi
+
+# Swap
+swap_pct=0
+_st=$(grep '^SwapTotal:' /proc/meminfo 2>/dev/null | awk '{print $2}' || echo 0)
+_sf=$(grep '^SwapFree:'  /proc/meminfo 2>/dev/null | awk '{print $2}' || echo 0)
+is_int "${_st:-0}" || _st=0; is_int "${_sf:-0}" || _sf=0
+if [ "${_st:-0}" -gt 0 ]; then
+  swap_pct=$(awk -v st="$_st" -v sf="$_sf" 'BEGIN{printf "%.0f",(st-sf)*100/st}')
+  is_int "${swap_pct:-0}" || swap_pct=0
+fi
+if   [ "$swap_pct" -gt 90 ]; then
+  pstatus "OS Swap usage" "Fail"    "Critical" "${swap_pct}% — investigate SHEAPTHRES_SHR"
+elif [ "$swap_pct" -gt 50 ]; then
+  pstatus "OS Swap usage" "Warning" "High"     "${swap_pct}% — elevated"
+else
+  pstatus "OS Swap usage" "Pass"    "Low"      "${swap_pct}%"
+fi
+
+# SA MP
+_samp=$(ps -ef 2>/dev/null \
+  | grep -cE 'IBM\.ResourceManager|IBM\.Automation|rsct' || echo 0)
+is_int "${_samp:-0}" || _samp=0
+if [ "$_samp" -gt 0 ]; then
+  pstatus "SA MP daemon" "Pass" "Low"      "$_samp process(es) detected"
+else
+  pstatus "SA MP daemon" "Fail" "Critical" "No SA MP processes — HADR automation inactive"
+fi
+
+# Per-DB
+for DB in $DBS; do
+  cs="${DB_CONNECT_STATUS[$DB]:-FAILED}"
+  if [ "$cs" = "FAILED" ]; then
+    pstatus "[$DB] Connection" "Fail" "Critical" "CONNECT FAILED — no data"
+    continue
+  fi
+
+  am1="${DB_LOGARCHMETH1[$DB]:-UNKNOWN}"
+  if echo "$am1" | grep -qiE 'DISK:|VENDOR:|TSM:'; then
+    pstatus "[$DB] LOGARCHMETH1" "Pass" "Low" "$am1"
+  else
+    pstatus "[$DB] LOGARCHMETH1" "Fail" "Critical" "Not configured ($am1)"
+  fi
+
+  am2="${DB_LOGARCHMETH2[$DB]:-UNKNOWN}"
+  if echo "$am2" | grep -qiE 'DISK:|VENDOR:|TSM:'; then
+    pstatus "[$DB] LOGARCHMETH2 dual path" "Pass"    "Low"  "$am2"
+  elif echo "$am1" | grep -qiE 'DISK:|VENDOR:|TSM:'; then
+    pstatus "[$DB] LOGARCHMETH2 dual path" "Warning" "High" "Single path only"
+  fi
+
+  echo "${DB_LOGARCHCOMPR[$DB]:-}" | grep -qi 'ON' \
+    && pstatus "[$DB] LOGARCHCOMPR1" "Pass"    "Low"    "ON" \
+    || pstatus "[$DB] LOGARCHCOMPR1" "Warning" "Medium" "OFF — larger archive volume"
+
+  echo "${DB_TRACKMOD[$DB]:-}" | grep -qi 'ON' \
+    && pstatus "[$DB] TRACKMOD" "Pass"    "Low"    "ON" \
+    || pstatus "[$DB] TRACKMOD" "Warning" "Medium" "OFF — incremental backups unavailable"
+
+  echo "${DB_AUTOCOLLECT_STATS[$DB]:-}" | grep -qi 'ON' \
+    && pstatus "[$DB] AUTO_RUNSTATS" "Pass" "Low"  "ON" \
+    || pstatus "[$DB] AUTO_RUNSTATS" "Fail" "High" "OFF — optimizer degrades on stale stats"
+
+  echo "${DB_STMM[$DB]:-}" | grep -qi 'ON' \
+    && pstatus "[$DB] STMM" "Pass"    "Low"    "ON — verify SHEAPTHRES_SHR cap" \
+    || pstatus "[$DB] STMM" "Warning" "Medium" "OFF — manual memory sizing"
+
+  hadr_sync="${DB_HADR_SYNC[$DB]:-NOT_CONFIGURED}"
+  case "$hadr_sync" in
+    NEARSYNC) pstatus "[$DB] HADR sync mode" "Pass"    "Low"  "NEARSYNC" ;;
+    SYNC)     pstatus "[$DB] HADR sync mode" "Warning" "Medium" \
+                "SYNC — per-commit latency; acceptable for near-idle DBs" ;;
+    ASYNC|SUPERASYNC) pstatus "[$DB] HADR sync mode" "Fail" "High" \
+                "$hadr_sync — data loss risk on failover" ;;
+    NOT_CONFIGURED) pstatus "[$DB] HADR sync mode" "Warning" "High" \
+                "HADR not configured — LLM will assess if HA expected" ;;
+    *) pstatus "[$DB] HADR sync mode" "Unknown" "High" "$hadr_sync" ;;
+  esac
+
+  lto="${DB_LOCKTIMEOUT[$DB]:-UNKNOWN}"
+  if [ "$lto" = "-1" ] 2>/dev/null; then
+    pstatus "[$DB] LOCKTIMEOUT" "Fail"    "High"   "-1 (never) — lock cascades hang"
+  elif is_int "$lto" && [ "$lto" -gt 0 ] && [ "$lto" -le 120 ]; then
+    pstatus "[$DB] LOCKTIMEOUT" "Pass"    "Low"    "${lto}s"
+  elif is_int "$lto" && [ "$lto" -gt 120 ]; then
+    pstatus "[$DB] LOCKTIMEOUT" "Warning" "Medium" "${lto}s — reduce to 60-90s"
+  else
+    pstatus "[$DB] LOCKTIMEOUT" "Unknown" "High"   "Value: $lto"
+  fi
+
+  lu="${DB_LOG_USED_KB[$DB]:-0}"; la="${DB_LOG_AVAIL_KB[$DB]:-0}"
+  is_int "$lu" || lu=0; is_int "$la" || la=0
+  if [ $((lu + la)) -gt 0 ]; then
+    lu_pct=$(awk -v u="$lu" -v a="$la" 'BEGIN{printf "%.0f",u*100/(u+a)}')
+    is_int "${lu_pct:-0}" || lu_pct=0
+    if   [ "$lu_pct" -lt 70 ]; then pstatus "[$DB] Log utilisation" "Pass"    "Low"      "${lu_pct}%"
+    elif [ "$lu_pct" -lt 85 ]; then pstatus "[$DB] Log utilisation" "Warning" "High"     "${lu_pct}% — review sizing"
+    else                             pstatus "[$DB] Log utilisation" "Fail"    "Critical" "${lu_pct}% — near log-full"
+    fi
+  else
+    pstatus "[$DB] Log utilisation" "Unknown" "High" "Could not determine"
+  fi
+
+  rp="${DB_REORG_PENDING_COUNT[$DB]:-0}"; is_int "$rp" || rp=0
+  if   [ "$rp" -eq 0 ]; then pstatus "[$DB] Reorg pending" "Pass"    "Low"    "None"
+  elif [ "$rp" -le 5 ]; then pstatus "[$DB] Reorg pending" "Warning" "Medium" "$rp table(s)"
+  else                        pstatus "[$DB] Reorg pending" "Fail"    "High"   "$rp table(s)"
+  fi
+
+  lw="${DB_LOCK_WAITS[$DB]:-0}"; is_int "$lw" || lw=0
+  if   [ "$lw" -eq 0 ]; then pstatus "[$DB] Active lock waits" "Pass"    "Low"    "None"
+  elif [ "$lw" -le 3 ]; then pstatus "[$DB] Active lock waits" "Warning" "Medium" "$lw wait(s)"
+  else                        pstatus "[$DB] Active lock waits" "Fail"    "High"   "$lw — contention event"
+  fi
+
+  lt="${DB_LONG_TXN_COUNT[$DB]:-0}"; is_int "$lt" || lt=0
+  if [ "$lt" -eq 0 ]; then pstatus "[$DB] Long transactions >60s" "Pass" "Low"  "None"
+  else                      pstatus "[$DB] Long transactions >60s" "Fail" "High" "$lt — blocking log + HADR"
+  fi
+
+  pstatus "[$DB] Last backup" "Info" "Review" "${DB_BACKUP_TS[$DB]:-UNKNOWN}"
+
+done
+blankln
+
+# ════════════════════════════════════════════════════════════════════════════════
+# SECTION 7 — LLM PROMPT
+# Structured facts + summary tables + pass/fail.
+# Full raw data stays in the report file — referenced from prompt.
+# ════════════════════════════════════════════════════════════════════════════════
+section "7. Generating LLM Prompt"
+progress "Section 7: generating prompt"
+
+# Per-DB structured facts block
+_per_db_facts=""
+for DB in $DBS; do
+  _cs="${DB_CONNECT_STATUS[$DB]:-UNKNOWN}"
+  _note=""; [ "$_cs" = "FAILED" ] && _note=" — CONNECT FAILED: all metrics N/A"
+
+  _lf="${DB_LOGFILSIZ[$DB]:-0}"; _lp="${DB_LOGPRIMARY[$DB]:-0}"
+  _log_mb="N/A"
+  if is_int "$_lf" && is_int "$_lp" && [ "$_lf" -gt 0 ] && [ "$_lp" -gt 0 ]; then
+    _log_mb="$(awk -v f="$_lf" -v p="$_lp" 'BEGIN{printf "%.0f",f*p*4/1024}') MB"
+  fi
+
+  _lu="${DB_LOG_USED_KB[$DB]:-0}"; _la="${DB_LOG_AVAIL_KB[$DB]:-0}"
+  _log_pct="N/A"
+  if is_int "$_lu" && is_int "$_la" && [ $((_lu + _la)) -gt 0 ]; then
+    _log_pct="$(awk -v u="$_lu" -v a="$_la" 'BEGIN{printf "%.1f%%",u*100/(u+a)}')"
+  fi
+
+  _per_db_facts+="### ${DB}${_note}
+| Metric             | Value |
+|--------------------|-------|
+| Connect            | ${_cs} |
+| Used / Alloc GB    | ${DB_USED_GB[$DB]:-N/A} / ${DB_TOTAL_GB[$DB]:-N/A} |
+| Tables / Schemas   | ${DB_TABLE_COUNT[$DB]:-N/A} / ${DB_SCHEMA_COUNT[$DB]:-N/A} |
+| Largest table rows | ${DB_MAX_CARD[$DB]:-N/A} |
+| Total rows         | ${DB_TOTAL_CARD[$DB]:-N/A} |
+| Active conns       | ${DB_CONNECT_COUNT[$DB]:-N/A} |
+| HADR role / sync   | ${DB_HADR_ROLE[$DB]:-N/A} / ${DB_HADR_SYNC[$DB]:-N/A} |
+| Active log space   | ${_log_mb} (LOGFILSIZ=${_lf} × LOGPRIMARY=${_lp} × 4KB) |
+| Log utilisation    | ${_log_pct} |
+| LOGARCHMETH1       | ${DB_LOGARCHMETH1[$DB]:-N/A} |
+| LOGARCHMETH2       | ${DB_LOGARCHMETH2[$DB]:-N/A} |
+| TRACKMOD           | ${DB_TRACKMOD[$DB]:-N/A} |
+| STMM               | ${DB_STMM[$DB]:-N/A} |
+| LOCKTIMEOUT        | ${DB_LOCKTIMEOUT[$DB]:-N/A} sec |
+| AUTO_RUNSTATS      | ${DB_AUTOCOLLECT_STATS[$DB]:-N/A} |
+| Lock waits         | ${DB_LOCK_WAITS[$DB]:-N/A} |
+| Long txns >60s     | ${DB_LONG_TXN_COUNT[$DB]:-N/A} |
+| Reorg pending      | ${DB_REORG_PENDING_COUNT[$DB]:-N/A} |
+| Last backup        | ${DB_BACKUP_TS[$DB]:-N/A} |
+
+"
+done
+
+# Summary table
+_summary_table="| Database | Used GB | Alloc GB | Total Rows | Lock Waits | Long Txns | Last Backup | Connect |
+|----------|---------|----------|------------|------------|-----------|-------------|---------|
+"
+for DB in $DBS; do
+  _summary_table+="| $DB | ${DB_USED_GB[$DB]:-N/A} | ${DB_TOTAL_GB[$DB]:-N/A} | ${DB_TOTAL_CARD[$DB]:-N/A} | ${DB_LOCK_WAITS[$DB]:-N/A} | ${DB_LONG_TXN_COUNT[$DB]:-N/A} | ${DB_BACKUP_TS[$DB]:-N/A} | ${DB_CONNECT_STATUS[$DB]:-N/A} |
+"
+done
+
+# Mode-specific task list
+if is_overall; then
+  _tasks='### 1. Classify All Databases
+For each: state type, confidence, and key evidence.
+Format: **DBNAME → TYPE** (High/Medium/Low confidence) — evidence: ...
+
+### 2. Validate Pass/Fail Table
+Cross-check every verdict against raw data.
+Tag corrections: [CORRECTION: original → corrected — reason]
+
+### 3. Executive Summary
+3–5 sentences. Overall health posture, top 3 risks.
+**Health rating: Strong / Solid / Concerning / At Risk / Critical**
+
+### 4. Per-Database Deep Dive
+Priority order: ICM_PRIMARY → SIBDB(s) → RMDB pairs → ICN
+For each: HADR state and log gap, log sizing adequacy, active incidents,
+backup coordination, statistics and reorg health, memory contribution.
+
+### 5. Cross-Database Analysis
+- RMDB_ALPHA vs RMDB_OMEGA: row count divergence % — replication healthy?
+- Backup skew across coordination pairs — any pair >15 min?
+- Migration direction: RMDB_LEGACY shrinking? RMDB_S3 growing?
+- SA MP: resource group count vs SIBDB instance count
+
+### 6. Memory and Swap Root Cause
+STMM, SHEAPTHRES_SHR, db2pd memset data.
+Which databases contribute most? Specific parameter recommendations.
+
+### 7. Log Sizing
+Per database: current MB, workload assessment, recommended config, ALTER command.
+
+### 8. Prioritised Action Plan
+**N. [SEVERITY]** Action — Risk if deferred — Command or procedure
+
+### 9. Confidence and Data Gaps'
+else
+  _tasks='### 1. Incident Check (escalate immediately if found)
+Any active lock waits or long transactions?
+Which DB, which application, how long running?
+
+### 2. Log Headroom
+Any DB above 70% active log utilisation?
+Calculate absolute headroom in MB and flag risk.
+
+### 3. Backup Coordination
+Calculate skew between coordination pairs.
+Flag any pair >15 min apart.
+
+### 4. SA MP Cluster
+Are both expected resource groups in lssam output?
+Are both SIBDB-type databases connected and healthy?
+
+### 5. Replication Consistency
+Compare RMDB_ALPHA vs RMDB_OMEGA total row counts.
+Divergence >2% = flag. >5% = escalate.
+
+### 6. Summary Verdict
+One paragraph. **Green / Amber / Red**.
+If everything is nominal, say so clearly and stop.'
+fi
+
+# Write prompt
+cat > "$PROMPT_MD" << PROMPT_HEAD
+# IBM ECM Db2 Health Check — $([ "$MODE" = "overall" ] && echo "Overall Review" || echo "Weekly Check")
+# Mode: ${MODE} | Generated: ${RUN_TS} | Host: ${HOST}
+# Raw data file: ${REPORT}
+
+---
 
 ## Your Role
-You are a senior IBM ECM 8.7.4 and Db2 LUW 11.5.x DBA expert.
-You have deep knowledge of:
-- FileNet P8 / IBM ECM 8.7.4 internal database architecture (GCD, object stores, workflow, audit)
-- ECM-specific Db2 workload patterns: metadata-heavy, append-only, high-frequency small transactions
-- Known ECM 8.7.4 pain points: DOCVERSION table growth, workflow QUEUEITEM lock contention,
-  audit table bloat, GCD single-point-of-truth risk, Content Engine JDBC pool exhaustion
-- Db2 LUW logging, HADR, STMM, lock management, index maintenance, statistics management
-- Production ECM constraints: no range partitioning, no MDC, no schema refactoring without IBM guidance
 
-## Environment Context (Human-Provided, Non-Queryable)
-- Application: IBM FileNet ECM 8.7.4 (Content Engine, Process Engine, GCD)
-- HADR: NEARSYNC mode, single standby, ACR enabled — NO Read on Standby (ACR incompatible)
-- Storage: Archive logs + nightly backups (1–6 AM window) to shared NAS primary
-  Second dedicated 500 GB NAS available for log-only use
-- Known anomaly: 100% OS swap with ~24 GB free RAM — likely STMM / SHEAPTHRES_SHR misconfiguration
-- Known anomaly: Active logs ~96 GB total, small files (40–400 MB each) — log sizing concern
-- OS: RHEL 8.10, 32 GB RAM per host
-- Monitoring: Grafana + node exporter (no deep Db2 metrics currently)
-- Vendor constraints: Cannot use range partitioning, MDC, or significant schema changes
-
-## Live System Report (Primary Source of Truth)
-Reason from this data directly. Where the pre-computed verdicts below conflict with what
-you observe in the raw data, the raw data takes precedence — note the discrepancy.
-
-\`\`\`
-$(cat "$REPORT")
-\`\`\`
-
-## Pre-Computed Pass/Fail Table (Reference Anchor — Validate, Don't Accept Blindly)
-These verdicts were computed by the collection script. Treat them as a starting checklist.
-For each item: confirm the verdict is consistent with the raw data above.
-Correct any item where you find contradictory evidence. Flag corrections explicitly.
-
-\`\`\`
-$(grep -A 200 "Pass / Fail / Warning Summary Table" "$REPORT" | head -200)
-\`\`\`
-
-## Extracted Key Facts (Script-Computed)
-$(for DB in $DBS; do
-  echo "### Database: $DB"
-  echo "- Used GB       : ${DB_USED_GB[$DB]:-UNKNOWN}"
-  echo "- Allocated GB  : ${DB_TOTAL_GB[$DB]:-UNKNOWN}"
-  echo "- LOGFILSIZ     : ${DB_LOGFILSIZ[$DB]:-UNKNOWN} pages"
-  echo "- LOGPRIMARY    : ${DB_LOGPRIMARY[$DB]:-UNKNOWN}"
-  echo "- LOGSECOND     : ${DB_LOGSECOND[$DB]:-UNKNOWN}"
-  echo "- LOGARCHMETH1  : ${DB_LOGARCHMETH1[$DB]:-UNKNOWN}"
-  echo "- LOGARCHMETH2  : ${DB_LOGARCHMETH2[$DB]:-UNKNOWN}"
-  echo "- LOGARCHCOMPR  : ${DB_LOGARCHCOMPR[$DB]:-UNKNOWN}"
-  echo "- TRACKMOD      : ${DB_TRACKMOD[$DB]:-UNKNOWN}"
-  echo "- HADR sync     : ${DB_HADR_SYNC[$DB]:-NOT_CONFIGURED}"
-  echo "- STMM          : ${DB_STMM[$DB]:-UNKNOWN}"
-  echo "- LOCKTIMEOUT   : ${DB_LOCKTIMEOUT[$DB]:-UNKNOWN} sec"
-  echo "- LOCKLIST      : ${DB_LOCKLIST[$DB]:-UNKNOWN}"
-  echo "- MAXLOCKS      : ${DB_MAXLOCKS[$DB]:-UNKNOWN}"
-  echo "- AUTO_RUNSTATS : ${DB_AUTOCOLLECT_STATS[$DB]:-UNKNOWN}"
-  echo "- Log used KB   : ${DB_LOG_USED_KB[$DB]:-UNKNOWN}"
-  echo "- Log avail KB  : ${DB_LOG_AVAIL_KB[$DB]:-UNKNOWN}"
-  echo "- Active lock waits      : ${DB_LOCK_WAITS[$DB]:-UNKNOWN}"
-  echo "- Long transactions >60s : ${DB_LONG_TXN_COUNT[$DB]:-UNKNOWN}"
-  echo "- Active connections     : ${DB_CONNECT_COUNT[$DB]:-UNKNOWN}"
-  echo "- Reorg pending tables   : ${DB_REORG_PENDING_COUNT[$DB]:-UNKNOWN}"
-  echo "- Last backup            : ${DB_LAST_BACKUP[$DB]:-UNKNOWN}"
-  echo "- ECM schemas detected   : ${DB_ECM_SCHEMAS[$DB]:-UNKNOWN}"
-  echo ""
-done)
-
-## Your Analysis Task
-
-### Step 1 — Validate
-Before writing any output, internally cross-check each pass/fail verdict against the raw data.
-Note any corrections you make with the label [CORRECTION].
-
-### Step 2 — Produce the Following Output
+You are a senior IBM Content Manager 8.7.4 and Db2 LUW 11.5 DBA expert
+with deep knowledge of RSCT/SA MP cluster automation, Resource Manager
+tiered storage architecture, and Db2 LUW internals.
 
 ---
 
-**EXECUTIVE SUMMARY** (3–5 sentences)
-Overall health posture, top 2–3 risks specific to ECM 8.7.4 production continuity,
-and an overall health rating: **Strong / Solid / Concerning / At Risk / Critical**.
+## Database Classification Taxonomy
+
+Classify each database using this table and the collected evidence.
+No human input is available — use the data alone.
+
+| Type         | Key Characteristics                                                          |
+|--------------|------------------------------------------------------------------------------|
+| ICM_PRIMARY  | Most tables (100s+), large rows (millions+), multiple schemas, HADR likely   |
+| ICN          | Moderate tables (~30-50), all small, 2-4 schemas, typically no HADR          |
+| RMDB_ALPHA   | Moderate tables (~40-60), large rows, few schemas, HADR, matches RMDB_OMEGA  |
+| RMDB_OMEGA   | Identical profile to RMDB_ALPHA — total row counts must match within ~2%     |
+| RMDB_S3      | Similar to RMDB_ALPHA/OMEGA — growing (S3 deep storage migration target)     |
+| RMDB_LEGACY  | Similar schema to other RMDBs — shrinking (migrating to RMDB_S3)            |
+| SIBDB        | Very few tables (<20), all tiny (<10k rows), 1 schema, SA MP daemon only     |
 
 ---
 
-**CRITICAL & HIGH FINDINGS** (grouped by severity, bulleted)
-For each Fail / Critical / High finding:
-- What is wrong (from the data)
-- Why it matters specifically to IBM ECM 8.7.4 (not generic Db2 advice)
-- Recommended fix with safe Db2 command(s) where applicable
-- Estimated risk if not addressed
+## Architecture (reason top-down, not laterally)
+
+- **ICM_PRIMARY** — all content metadata. Entire stack depends on it.
+- **ICN** — UI layer only. Failure = UI outage. Content integrity unaffected.
+- **RMDB_ALPHA ↔ RMDB_OMEGA** — local disk RM pair. Replicate at ICM app level. Row counts must be near-identical.
+- **RMDB_S3** — Hitachi S3 deep storage RM. Migration target. Should be growing.
+- **RMDB_LEGACY** — migrating to RMDB_S3. Must be shrinking.
+- **SIBDB** — SA MP quorum DB. Governs automated HADR failover for paired RM cluster. Silent failure = next outage requires manual intervention.
 
 ---
 
-**LOG SIZING ANALYSIS** (per database)
-For each database:
-- Current LOGFILSIZ × LOGPRIMARY = total primary log space (calculate it)
-- Script-suggested sizing vs what you would recommend based on ECM 8.7.4 workload
-- If the 96 GB active log anomaly is consistent with the sizing config — explain why or why not
-- Safe commands to resize (must be done offline or via HADR failover for live systems)
+## Backup Coordination Rules
+
+| Pair                       | Max Skew | Reason                               |
+|----------------------------|----------|--------------------------------------|
+| ICM_PRIMARY ↔ RMDB_ALPHA   | 15 min   | Metadata + active RM                 |
+| ICM_PRIMARY ↔ RMDB_OMEGA   | 15 min   | Metadata + active RM                 |
+| ICM_PRIMARY ↔ RMDB_S3      | 15 min   | Migrated content references          |
+| RMDB_ALPHA  ↔ RMDB_OMEGA   | 15 min   | Replication pair — same point-in-time|
+| ICM_PRIMARY ↔ RMDB_LEGACY  | 15 min   | During active migration window       |
+| ICN, SIBDB                 | Independent — no content integrity dependency |
 
 ---
 
-**SWAP / MEMORY ANOMALY INVESTIGATION**
-Given: 32 GB RAM, 100% swap, 24 GB apparently free RAM.
-Diagnose the most likely causes using the STMM, SHEAPTHRES_SHR, DATABASE_MEMORY,
-and db2pd memset data in the report. Provide specific remediation steps.
+## All Databases at a Glance
+
+${_summary_table}
 
 ---
 
-**ECM-SPECIFIC RISKS NOT IN THE PASS/FAIL TABLE**
-Look for patterns in the raw data that the automated checks may have missed:
-- DOCVERSION or QUEUEITEM anomalies
-- Connection patterns suggesting pool saturation
-- SQL patterns suggesting missing indexes or stale statistics on ECM tables
-- Anything in the schema detection that looks unusual for ECM 8.7.4
+## Per-Database Structured Facts
+
+${_per_db_facts}
 
 ---
 
-**PRIORITIZED ACTION PLAN** (numbered, highest impact first)
-Format each item as:
-1. [SEVERITY] Action — Business risk if not done — Safe command or procedure
+## Pass/Fail Table
+Raw data in ${REPORT} takes precedence. Tag disagreements: [CORRECTION: reason]
+
+PROMPT_HEAD
+
+# Append the pass/fail section
+grep -A 300 "Pass / Fail / Warning Summary" "$REPORT" \
+  | head -200 >> "$PROMPT_MD" || true
+
+cat >> "$PROMPT_MD" << PROMPT_TAIL
 
 ---
 
-**CONFIDENCE & OPEN QUESTIONS**
-List any data gaps, ambiguous readings, or items you need additional information on.
-Rate your overall confidence in this analysis: High / Medium / Low, with rationale.
+## Analysis Tasks
 
-EOMD
+${_tasks}
 
-log ""
-log "Claude prompt written to: $PROMPT_MD"
+---
+*Full raw Db2 output: ${REPORT}*
+*Ask for specific sections by name if deeper data is needed.*
+PROMPT_TAIL
+
+PROMPT_SIZE=$(wc -c < "$PROMPT_MD" | tr -d ' ')
+log "Prompt  : $PROMPT_MD (~$((PROMPT_SIZE/1024)) KB)"
+log "Report  : $REPORT"
+progress "Prompt generated: ~$((PROMPT_SIZE/1024)) KB"
 
 # ════════════════════════════════════════════════════════════════════════════════
-# SECTION 6 — THREE-EXPERT VERIFICATION REPORT
-# Each expert reviews the script's own output for completeness and correctness.
-# This runs AFTER data collection so it can reference actual output content.
+# SECTION 8 — VERIFICATION + LLM RECOMMENDATION
 # ════════════════════════════════════════════════════════════════════════════════
+progress "Section 8: verification"
 
-echo "════════════════════════════════════════════════════════════" >> "$VERIFY"
-echo "THREE-EXPERT VERIFICATION REPORT" >> "$VERIFY"
-echo "Script: db2_ecm_health_check_v2.sh" >> "$VERIFY"
-echo "Run: $RUN_TS" >> "$VERIFY"
-echo "Report reviewed: $REPORT" >> "$VERIFY"
-echo "════════════════════════════════════════════════════════════" >> "$VERIFY"
+vsect "EXPERT VERIFICATION  [${MODE}]"
+vlog "Run     : $RUN_TS"
+vlog "Report  : $REPORT"
+vlog "Prompt  : $PROMPT_MD"
 
-# ── EXPERT 1: Db2 LUW DBA ─────────────────────────────────────────────────────
-echo "" >> "$VERIFY"
-echo "══ EXPERT 1: Db2 LUW DBA VERIFICATION ══" >> "$VERIFY"
-echo "" >> "$VERIFY"
+v_p=0; v_f=0; v_w=0
+e_p=0; e_f=0; e_w=0
+p_p=0; p_f=0; p_w=0
+s_p=0; s_f=0; s_w=0
 
-v_pass=0; v_fail=0; v_warn=0
-
-check_v() {
-  local label="$1"
-  local result="$2"   # PASS / FAIL / WARN
-  local detail="$3"
-  printf "  [%-4s] %s — %s\n" "$result" "$label" "$detail" >> "$VERIFY"
-  case "$result" in
-    PASS) ((v_pass++)) ;;
-    FAIL) ((v_fail++)) ;;
-    WARN) ((v_warn++)) ;;
+_chk() {
+  printf "  [%-4s] %s — %s\n" "$2" "$3" "$4" >> "$VERIFY"
+  case "${1}_${2}" in
+    v_PASS) (( v_p++ )) || true ;; v_FAIL) (( v_f++ )) || true ;; v_WARN) (( v_w++ )) || true ;;
+    e_PASS) (( e_p++ )) || true ;; e_FAIL) (( e_f++ )) || true ;; e_WARN) (( e_w++ )) || true ;;
+    p_PASS) (( p_p++ )) || true ;; p_FAIL) (( p_f++ )) || true ;; p_WARN) (( p_w++ )) || true ;;
+    s_PASS) (( s_p++ )) || true ;; s_FAIL) (( s_f++ )) || true ;; s_WARN) (( s_w++ )) || true ;;
   esac
 }
 
-# Did db2level capture succeed?
-if grep -q "DB2 v" "$REPORT" 2>/dev/null || grep -q "Informational tokens" "$REPORT" 2>/dev/null; then
-  check_v "db2level captured" "PASS" "Version info present in report"
-else
-  check_v "db2level captured" "FAIL" "Version not found in report — db2 environment may not have sourced correctly"
-fi
-
-# DBM config captured?
-if grep -qiE 'MAX_CONNECTIONS|MAX_COORDAGENTS' "$REPORT" 2>/dev/null; then
-  check_v "DBM config (instance level)" "PASS" "MAX_CONNECTIONS/MAX_COORDAGENTS found"
-else
-  check_v "DBM config (instance level)" "FAIL" "DBM config not found — instance-level config missing from analysis"
-fi
-
-# MON_GET_TABLESPACE ran?
-if grep -qi 'TBSP_NAME\|total_gb\|used_gb' "$REPORT" 2>/dev/null; then
-  check_v "MON_GET_TABLESPACE executed" "PASS" "Tablespace data found"
-else
-  check_v "MON_GET_TABLESPACE executed" "FAIL" "No tablespace data found — size analysis will be empty"
-fi
-
-# Log status captured?
-if grep -qi 'TOTAL_LOG_USED_KB\|LOG_USED_PCT\|log_used_pct\|NUM_LOG_SPAN' "$REPORT" 2>/dev/null; then
-  check_v "MON_GET_TRANSACTION_LOG executed" "PASS" "Log utilization data present"
-else
-  check_v "MON_GET_TRANSACTION_LOG executed" "FAIL" "Log status not found — critical gap for active log health"
-fi
-
-# HADR status captured?
-if grep -qi 'HADR_SYNC_MODE\|hadr' "$REPORT" 2>/dev/null; then
-  check_v "HADR config captured" "PASS" "HADR parameters found"
-else
-  check_v "HADR config captured" "WARN" "No HADR data found — may not be configured, or db2pd failed"
-fi
-
-# Backup history captured?
-if grep -qi 'Backup\|LIST HISTORY' "$REPORT" 2>/dev/null; then
-  check_v "Backup history captured" "PASS" "Backup data found"
-else
-  check_v "Backup history captured" "FAIL" "No backup history — critical gap for ECM recovery posture"
-fi
-
-# THP check ran?
-if grep -qi 'transparent_hugepage\|THP' "$REPORT" 2>/dev/null; then
-  check_v "THP status checked" "PASS" "THP data found"
-else
-  check_v "THP status checked" "WARN" "THP check output not found in report"
-fi
-
-# Memory / swap captured?
-if grep -qi 'SwapTotal\|MemAvailable' "$REPORT" 2>/dev/null; then
-  check_v "OS memory/swap captured" "PASS" "Memory stats found"
-else
-  check_v "OS memory/swap captured" "FAIL" "Memory stats missing — swap anomaly cannot be analyzed"
-fi
-
-# Lock waits query ran?
-if grep -qi 'LOCK_WAIT_ELAPSED_TIME\|MON_GET_APPL_LOCKWAIT' "$REPORT" 2>/dev/null; then
-  check_v "Lock wait data captured" "PASS" "Lock wait query ran"
-else
-  check_v "Lock wait data captured" "FAIL" "Lock wait data missing — cannot assess current contention"
-fi
-
-# LOGFILSIZ extracted for all DBs?
+vsect "EXPERT 1: Db2 DBA"
+grep -qiE 'DB2 v|Informational tokens' "$REPORT" 2>/dev/null \
+  && _chk v PASS "db2level" "Version captured" \
+  || _chk v FAIL "db2level" "Missing"
+grep -qiE 'LOGFILSIZ|LOGARCHMETH' "$REPORT" 2>/dev/null \
+  && _chk v PASS "DB config" "Log config present" \
+  || _chk v FAIL "DB config" "No config — all connects failed?"
+grep -qiE 'TOTAL_LOG_USED_KB|log_used_pct' "$REPORT" 2>/dev/null \
+  && _chk v PASS "Log utilisation" "Present" \
+  || _chk v FAIL "Log utilisation" "Missing"
+grep -qiE 'HADR_SYNC_MODE|HADR Status' "$REPORT" 2>/dev/null \
+  && _chk v PASS "HADR data" "Present" \
+  || _chk v WARN "HADR data" "Not found"
+grep -qiE 'Start Time|Last backup' "$REPORT" 2>/dev/null \
+  && _chk v PASS "Backup history" "Present" \
+  || _chk v FAIL "Backup history" "Missing — recovery posture unknown"
+grep -qiE 'LOCK_WAIT|MON_GET_APPL_LOCKWAIT' "$REPORT" 2>/dev/null \
+  && _chk v PASS "Lock wait data" "Present" \
+  || _chk v FAIL "Lock wait data" "Missing"
 for DB in $DBS; do
-  if [ "${DB_LOGFILSIZ[$DB]:-UNKNOWN}" != "UNKNOWN" ] && [ "${DB_LOGFILSIZ[$DB]:-0}" != "0" ]; then
-    check_v "LOGFILSIZ extracted [$DB]" "PASS" "Value: ${DB_LOGFILSIZ[$DB]} pages"
+  [ "${DB_CONNECT_STATUS[$DB]:-FAILED}" = "CONNECTED" ] || continue
+  lf="${DB_LOGFILSIZ[$DB]:-UNKNOWN}"
+  if [ "$lf" != "UNKNOWN" ] && [ "$lf" != "0" ]; then
+    _chk v PASS "LOGFILSIZ [$DB]" "$lf pages"
   else
-    check_v "LOGFILSIZ extracted [$DB]" "FAIL" "Could not extract LOGFILSIZ for $DB — log sizing analysis incomplete"
+    _chk v FAIL "LOGFILSIZ [$DB]" "UNKNOWN — extraction failed"
   fi
 done
-
-echo "" >> "$VERIFY"
-echo "  Db2 DBA Score: PASS=$v_pass  FAIL=$v_fail  WARN=$v_warn" >> "$VERIFY"
-if [ $v_fail -gt 3 ]; then
-  echo "  VERDICT: REPORT HAS SIGNIFICANT GAPS — Claude analysis will be unreliable" >> "$VERIFY"
-elif [ $v_fail -gt 0 ]; then
-  echo "  VERDICT: REPORT HAS MINOR GAPS — Claude analysis will note missing areas" >> "$VERIFY"
-else
-  echo "  VERDICT: Db2 DATA COLLECTION COMPLETE" >> "$VERIFY"
-fi
-
-# ── EXPERT 2: IBM ECM 8.7.4 Specialist ───────────────────────────────────────
-echo "" >> "$VERIFY"
-echo "══ EXPERT 2: IBM ECM 8.7.4 SPECIALIST VERIFICATION ══" >> "$VERIFY"
-echo "" >> "$VERIFY"
-
-e_pass=0; e_fail=0; e_warn=0
-
-check_e() {
-  local label="$1"
-  local result="$2"
-  local detail="$3"
-  printf "  [%-4s] %s — %s\n" "$result" "$label" "$detail" >> "$VERIFY"
-  case "$result" in
-    PASS) ((e_pass++)) ;;
-    FAIL) ((e_fail++)) ;;
-    WARN) ((e_warn++)) ;;
-  esac
+is_overall && {
+  grep -qiE 'ADMINTABINFO|total_gb' "$REPORT" 2>/dev/null \
+    && _chk v PASS "Top tables" "ADMINTABINFO present" \
+    || _chk v WARN "Top tables" "Missing"
 }
+vlog "  DB2 DBA: PASS=$v_p  FAIL=$v_f  WARN=$v_w"
 
-# ECM schemas detected?
+vsect "EXPERT 2: ECM Specialist"
+_any=0; _cf=0
 for DB in $DBS; do
-  if [ "${DB_ECM_SCHEMAS[$DB]:-UNKNOWN}" != "UNKNOWN" ] && [ "${DB_ECM_SCHEMAS[$DB]:-}" != "" ]; then
-    check_e "ECM schemas detected [$DB]" "PASS" "Schemas: ${DB_ECM_SCHEMAS[$DB]}"
-  else
-    check_e "ECM schemas detected [$DB]" "WARN" "No schemas detected — may be system DB or schema query failed"
-  fi
+  [ "${DB_CONNECT_STATUS[$DB]:-FAILED}" = "CONNECTED" ] && (( _any++ )) || (( _cf++ )) || true
+done
+[ "$_any" -gt 0 ] \
+  && _chk e PASS "Connects" "$_any / $DB_COUNT connected" \
+  || _chk e FAIL "Connects" "ALL failed"
+[ "$_cf" -eq 0 ] \
+  && _chk e PASS "All DBs connected" "No failures" \
+  || _chk e WARN "All DBs connected" "$_cf DB(s) failed — partial data"
+_parity=0
+for DB in $DBS; do
+  tc="${DB_TOTAL_CARD[$DB]:-0}"; is_int "$tc" && [ "$tc" -gt 0 ] && (( _parity++ )) || true
+done
+[ "$_parity" -ge 2 ] \
+  && _chk e PASS "Row parity data" "$_parity DBs have row counts" \
+  || _chk e WARN "Row parity data" "Fewer than 2 DBs — parity check limited"
+_mts=0
+for DB in $DBS; do
+  [ "${DB_CONNECT_STATUS[$DB]:-FAILED}" = "CONNECTED" ] || continue
+  [ "${DB_BACKUP_TS[$DB]:-UNKNOWN}" = "UNKNOWN" ] && (( _mts++ )) || true
+done
+[ "$_mts" -eq 0 ] \
+  && _chk e PASS "Backup timestamps" "All connected DBs captured" \
+  || _chk e WARN "Backup timestamps" "$_mts DB(s) missing timestamp"
+grep -qiE 'lssam|IBM\.ResourceManager|rsct' "$REPORT" 2>/dev/null \
+  && _chk e PASS "SA MP data" "Present" \
+  || _chk e WARN "SA MP data" "Not accessible — RM cluster HA unverifiable"
+grep -qiE 'TABNAME|TABSCHEMA' "$REPORT" 2>/dev/null \
+  && _chk e PASS "Table names visible" "LLM can classify from names" \
+  || _chk e WARN "Table names visible" "Overall mode adds this — weekly uses stats only"
+vlog "  ECM Specialist: PASS=$e_p  FAIL=$e_f  WARN=$e_w"
+
+vsect "EXPERT 3: Prompt Engineer"
+[ "$PROMPT_SIZE" -gt 1000 ] \
+  && _chk p PASS "Prompt generated" "~$((PROMPT_SIZE/1024)) KB" \
+  || _chk p FAIL "Prompt generated" "Empty or near-empty"
+grep -q 'Classification Taxonomy' "$PROMPT_MD" 2>/dev/null \
+  && _chk p PASS "Taxonomy table" "Present" \
+  || _chk p FAIL "Taxonomy table" "Missing — LLM has no classification guide"
+grep -q 'Architecture' "$PROMPT_MD" 2>/dev/null \
+  && _chk p PASS "Architecture context" "Dependency chain present" \
+  || _chk p FAIL "Architecture context" "Missing"
+grep -q 'Backup Coordination' "$PROMPT_MD" 2>/dev/null \
+  && _chk p PASS "Backup coordination rules" "15-min skew rule present" \
+  || _chk p FAIL "Backup coordination rules" "Missing"
+grep -q 'CORRECTION' "$PROMPT_MD" 2>/dev/null \
+  && _chk p PASS "Anti-anchoring" "Validate-not-accept instruction present" \
+  || _chk p WARN "Anti-anchoring" "Missing"
+if   [ "$PROMPT_SIZE" -lt 60000  ]; then
+  _chk p PASS "Prompt size" "~$((PROMPT_SIZE/1024)) KB — fits all models"
+elif [ "$PROMPT_SIZE" -lt 100000 ]; then
+  _chk p PASS "Prompt size" "~$((PROMPT_SIZE/1024)) KB — GPT-4o / Gemini Pro range"
+elif [ "$PROMPT_SIZE" -lt 150000 ]; then
+  _chk p WARN "Prompt size" "~$((PROMPT_SIZE/1024)) KB — use Gemini Pro"
+else
+  _chk p FAIL "Prompt size" "~$((PROMPT_SIZE/1024)) KB — Gemini Pro only"
+fi
+vlog "  Prompt Engineer: PASS=$p_p  FAIL=$p_f  WARN=$p_w"
+
+vsect "EXPERT 4: RHEL Sysadmin"
+rlines=$(wc -l < "$REPORT" 2>/dev/null || echo 0)
+[ "$rlines" -gt 50 ] \
+  && _chk s PASS "Report content" "$rlines lines" \
+  || _chk s FAIL "Report content" "$rlines lines — collection likely failed"
+grep -qiE 'MemTotal|SwapTotal' "$REPORT" 2>/dev/null \
+  && _chk s PASS "OS memory" "/proc/meminfo captured" \
+  || _chk s FAIL "OS memory" "Missing — swap anomaly undiagnosable"
+grep -qiE 'always|madvise|never' "$REPORT" 2>/dev/null \
+  && _chk s PASS "THP status" "Captured" \
+  || _chk s WARN "THP status" "Not found"
+grep -qiE 'lssam|rsct' "$REPORT" 2>/dev/null \
+  && _chk s PASS "SA MP data" "Present" \
+  || _chk s WARN "SA MP data" "lssam not accessible"
+_errs=$(grep -cE '^(CRITICAL|CONNECT FAILED)' "$REPORT" 2>/dev/null || echo 0)
+is_int "${_errs:-0}" || _errs=0
+if   [ "$_errs" -eq 0 ]; then _chk s PASS "Collection errors" "None"
+elif [ "$_errs" -le 3 ]; then _chk s WARN "Collection errors" "$_errs error(s)"
+else                           _chk s FAIL "Collection errors" "$_errs errors — significant failures"
+fi
+vlog "  RHEL Sysadmin: PASS=$s_p  FAIL=$s_f  WARN=$s_w"
+
+# ── LLM Recommendation ───────────────────────────────────────────────────────
+vsect "LLM RECOMMENDATION"
+
+total_lw=0; total_lt=0
+for DB in $DBS; do
+  lw="${DB_LOCK_WAITS[$DB]:-0}";    is_int "$lw" || lw=0; (( total_lw += lw )) || true
+  lt="${DB_LONG_TXN_COUNT[$DB]:-0}"; is_int "$lt" || lt=0; (( total_lt += lt )) || true
 done
 
-# Large ECM tables (DOCVERSION etc) visible?
-if grep -qiE 'DOCVERSION|QUEUEITEM|ROSIDMAP|OBJECT_|AUDIT' "$REPORT" 2>/dev/null; then
-  check_e "ECM-specific tables visible in top tables" "PASS" "Key ECM tables found in large table list"
+INCIDENT=false
+[ "$total_lw" -gt 0 ] && INCIDENT=true
+[ "$total_lt" -gt 0 ] && INCIDENT=true
+is_int "${swap_pct:-0}" && [ "${swap_pct:-0}" -gt 90 ] && INCIDENT=true
+
+if $INCIDENT; then
+  LLM="Claude Opus 4";      LLM_ALT="GPT-4o"
+  LLM_REASON="Active incident (lock_waits=${total_lw} long_txns=${total_lt} swap=${swap_pct}%). Reasoning depth > token cost when production is degraded."
+elif [ "$_cf" -gt 0 ] || [ "$p_f" -ge 3 ]; then
+  LLM="Claude Sonnet 4";    LLM_ALT="GPT-4o"
+  LLM_REASON="Connect failures ($_cf) or prompt gaps ($p_f failed). Sonnet handles missing data better than Flash/mini."
+elif [ "$PROMPT_SIZE" -gt 100000 ]; then
+  LLM="Gemini 1.5 Pro";     LLM_ALT="Claude Sonnet 4"
+  LLM_REASON="Prompt ~$((PROMPT_SIZE/1024)) KB. Gemini's 1M context removes truncation risk at this size."
+elif is_overall; then
+  LLM="GPT-4o";             LLM_ALT="Gemini 1.5 Pro"
+  LLM_REASON="Overall review, clean data. GPT-4o handles the structured taxonomy and 9-task prompt reliably."
 else
-  check_e "ECM-specific tables visible in top tables" "WARN" "No recognizable ECM table names — may be aliased, or schema owner differs"
+  LLM="Gemini 1.5 Flash";   LLM_ALT="GPT-4o mini"
+  LLM_REASON="Weekly check, no incidents, clean data, small prompt (~$((PROMPT_SIZE/1024)) KB). Structured prompt does the work — best token value."
 fi
 
-# Reorg pending check ran?
-if grep -qi 'REORG_PENDING' "$REPORT" 2>/dev/null; then
-  check_e "Reorg pending check executed" "PASS" "REORG_PENDING column queried"
-else
-  check_e "Reorg pending check executed" "FAIL" "Reorg pending check missing — ECM index health unknown"
+total_f=$(( v_f + e_f + p_f + s_f ))
+total_w=$(( v_w + e_w + p_w + s_w ))
+total_p=$(( v_p + e_p + p_p + s_p ))
+
+if   [ "$total_f" -eq 0 ] && [ "$total_w" -le 3 ]; then VERDICT="ALL EXPERTS APPROVE"
+elif [ "$total_f" -eq 0 ];                          then VERDICT="MOSTLY READY — review warnings"
+elif [ "$total_f" -le 3 ];                          then VERDICT="USABLE WITH GAPS — $total_f failure(s)"
+else                                                      VERDICT="NOT READY — $total_f failures"
 fi
 
-# Long transaction check ran?
-if grep -qi 'UOW_ELAPSED_TIME\|MON_GET_UNIT_OF_WORK' "$REPORT" 2>/dev/null; then
-  check_e "Long transaction check executed" "PASS" "UOW monitoring ran"
-else
-  check_e "Long transaction check executed" "FAIL" "Long transaction check missing — hung ECM CE transactions won't be flagged"
-fi
-
-# Connection analysis ran?
-if grep -qi 'MON_GET_CONNECTION\|APPLICATION_NAME.*conn_count' "$REPORT" 2>/dev/null; then
-  check_e "Connection pool analysis ran" "PASS" "Connection data present"
-else
-  check_e "Connection pool analysis ran" "FAIL" "Connection data missing — ECM pool saturation not assessable"
-fi
-
-# Top SQL captured?
-if grep -qi 'MON_GET_PKG_CACHE\|total_exec_ms\|sql_snippet' "$REPORT" 2>/dev/null; then
-  check_e "Top SQL by execution time captured" "PASS" "Package cache data present"
-else
-  check_e "Top SQL by execution time captured" "WARN" "Top SQL not found — ECM slow query root cause analysis limited"
-fi
-
-# Stale statistics check ran?
-if grep -qi 'STATS_TIME\|days_since_stats\|last_stats_date' "$REPORT" 2>/dev/null; then
-  check_e "Stale statistics check ran" "PASS" "Statistics age data present"
-else
-  check_e "Stale statistics check ran" "FAIL" "Stats check missing — optimizer health for ECM queries unknown"
-fi
-
-# Cluster ratio index check ran?
-if grep -qi 'CLUSTERRATIO\|cluster_ratio' "$REPORT" 2>/dev/null; then
-  check_e "Index cluster ratio check ran" "PASS" "Cluster ratio data present"
-else
-  check_e "Index cluster ratio check ran" "WARN" "No cluster ratio data — ECM range scan performance unknown"
-fi
-
-# Fragmented tablespace check ran?
-if grep -qi 'free_pct\|Free Space.*Reorg' "$REPORT" 2>/dev/null; then
-  check_e "Tablespace fragmentation check ran" "PASS" "Free space per tablespace data present"
-else
-  check_e "Tablespace fragmentation check ran" "FAIL" "Fragmentation check missing — ECM tablespace bloat not assessable"
-fi
-
-# LOCKTIMEOUT checked?
-for DB in $DBS; do
-  lt="${DB_LOCKTIMEOUT[$DB]:-UNKNOWN}"
-  if [ "$lt" != "UNKNOWN" ]; then
-    check_e "LOCKTIMEOUT extracted [$DB]" "PASS" "Value: $lt sec"
-  else
-    check_e "LOCKTIMEOUT extracted [$DB]" "WARN" "Could not extract LOCKTIMEOUT — ECM lock cascade risk unknown"
-  fi
-done
-
-echo "" >> "$VERIFY"
-echo "  ECM Specialist Score: PASS=$e_pass  FAIL=$e_fail  WARN=$e_warn" >> "$VERIFY"
-if [ $e_fail -ge 3 ]; then
-  echo "  VERDICT: CRITICAL ECM-SPECIFIC GAPS — major blind spots for ECM health review" >> "$VERIFY"
-elif [ $e_fail -ge 1 ] || [ $e_warn -ge 3 ]; then
-  echo "  VERDICT: MODERATE ECM GAPS — Claude analysis will flag these as unknowns" >> "$VERIFY"
-else
-  echo "  VERDICT: ECM DATA COLLECTION ADEQUATE" >> "$VERIFY"
-fi
-
-# ── EXPERT 3: Prompt Engineer ─────────────────────────────────────────────────
-echo "" >> "$VERIFY"
-echo "══ EXPERT 3: PROMPT ENGINEER VERIFICATION ══" >> "$VERIFY"
-echo "" >> "$VERIFY"
-
-p_pass=0; p_fail=0; p_warn=0
-
-check_p() {
-  local label="$1"
-  local result="$2"
-  local detail="$3"
-  printf "  [%-4s] %s — %s\n" "$result" "$label" "$detail" >> "$VERIFY"
-  case "$result" in
-    PASS) ((p_pass++)) ;;
-    FAIL) ((p_fail++)) ;;
-    WARN) ((p_warn++)) ;;
-  esac
-}
-
-# Does the prompt file exist and have content?
-prompt_lines=$(wc -l < "$PROMPT_MD" 2>/dev/null || echo 0)
-if [ "$prompt_lines" -gt 50 ]; then
-  check_p "Prompt file generated" "PASS" "$prompt_lines lines — substantial content"
-elif [ "$prompt_lines" -gt 0 ]; then
-  check_p "Prompt file generated" "WARN" "Only $prompt_lines lines — may be incomplete"
-else
-  check_p "Prompt file generated" "FAIL" "Prompt file empty or not found"
-fi
-
-# Does the prompt contain the live report?
-if grep -q "db2level\|LOGFILSIZ\|MON_GET" "$PROMPT_MD" 2>/dev/null; then
-  check_p "Live report embedded in prompt" "PASS" "Db2 data visible inside prompt"
-else
-  check_p "Live report embedded in prompt" "FAIL" "Live data not embedded — Claude will have no grounding data"
-fi
-
-# Does the prompt contain the pass/fail table?
-if grep -q "PASS\|FAIL\|Warning" "$PROMPT_MD" 2>/dev/null; then
-  check_p "Pass/fail table embedded in prompt" "PASS" "Verdict table visible in prompt"
-else
-  check_p "Pass/fail table embedded in prompt" "FAIL" "No pass/fail table in prompt — Claude lacks structured findings to validate"
-fi
-
-# Does the prompt define Claude's role explicitly?
-if grep -qi 'senior.*DBA\|ECM.*expert\|Your Role' "$PROMPT_MD" 2>/dev/null; then
-  check_p "Role definition present" "PASS" "Persona and expertise loaded"
-else
-  check_p "Role definition present" "FAIL" "No role definition — Claude will reason generically, not as ECM+Db2 expert"
-fi
-
-# Does the prompt specify NOT to blindly trust the pass/fail table?
-if grep -qi 'validate\|do not.*accept\|raw data.*precedence\|validate.*don.*accept' "$PROMPT_MD" 2>/dev/null; then
-  check_p "Anti-anchoring instruction present" "PASS" "Prompt instructs Claude to validate verdicts, not just accept them"
-else
-  check_p "Anti-anchoring instruction present" "FAIL" "Prompt may anchor Claude to script verdicts — Claude reasoning suppressed"
-fi
-
-# Does the prompt specify output sections?
-if grep -qi 'EXECUTIVE SUMMARY\|Action Plan\|Confidence' "$PROMPT_MD" 2>/dev/null; then
-  check_p "Structured output format specified" "PASS" "Executive summary, action plan, confidence sections defined"
-else
-  check_p "Structured output format specified" "WARN" "Output format not clearly specified — Claude may produce unstructured response"
-fi
-
-# Does the prompt include ECM-specific context (not just generic Db2)?
-if grep -qi 'DOCVERSION\|Content Engine\|QUEUEITEM\|GCD\|FileNet' "$PROMPT_MD" 2>/dev/null; then
-  check_p "ECM-specific domain context loaded" "PASS" "FileNet/GCD/DOCVERSION context present"
-else
-  check_p "ECM-specific domain context loaded" "FAIL" "No ECM 8.7.4 domain context — Claude will give generic Db2 advice"
-fi
-
-# Does the prompt include the swap anomaly as a specific focus area?
-if grep -qi 'swap\|SHEAPTHRES_SHR\|STMM.*anomaly\|memory.*anomaly' "$PROMPT_MD" 2>/dev/null; then
-  check_p "Known swap anomaly highlighted to Claude" "PASS" "Swap issue called out as specific investigation target"
-else
-  check_p "Known swap anomaly highlighted to Claude" "WARN" "Swap anomaly not prominently flagged — Claude may bury it in generic findings"
-fi
-
-# Does the prompt ask Claude to flag corrections?
-if grep -qi '\[CORRECTION\]\|corrections\|discrepancy' "$PROMPT_MD" 2>/dev/null; then
-  check_p "Correction/discrepancy tracking requested" "PASS" "Claude instructed to flag script verdict corrections"
-else
-  check_p "Correction/discrepancy tracking requested" "WARN" "No explicit correction tracking — Claude may silently override verdicts"
-fi
-
-# Is the per-DB extracted facts section present?
-if grep -qi 'Used GB\|Log used KB\|LOGARCHMETH' "$PROMPT_MD" 2>/dev/null; then
-  check_p "Per-DB extracted facts in prompt" "PASS" "Key values per database listed for Claude's reference"
-else
-  check_p "Per-DB extracted facts in prompt" "WARN" "Per-DB facts section incomplete"
-fi
-
-# Is prompt likely under context limit? (rough heuristic: <80KB)
-prompt_size=$(wc -c < "$PROMPT_MD" 2>/dev/null || echo 0)
-if [ "$prompt_size" -lt 80000 ]; then
-  check_p "Prompt size within reasonable Claude context limit" "PASS" "~$((prompt_size/1024)) KB — fits comfortably"
-elif [ "$prompt_size" -lt 150000 ]; then
-  check_p "Prompt size within reasonable Claude context limit" "WARN" "~$((prompt_size/1024)) KB — large but usable; consider using Claude.ai Pro or API for full context"
-else
-  check_p "Prompt size within reasonable Claude context limit" "FAIL" "~$((prompt_size/1024)) KB — too large for default Claude context; truncate top SQL or tablespace details"
-fi
-
-echo "" >> "$VERIFY"
-echo "  Prompt Engineer Score: PASS=$p_pass  FAIL=$p_fail  WARN=$p_warn" >> "$VERIFY"
-if [ $p_fail -ge 3 ]; then
-  echo "  VERDICT: PROMPT CRITICALLY DEFICIENT — fix before submitting to Claude" >> "$VERIFY"
-elif [ $p_fail -ge 1 ] || [ $p_warn -ge 4 ]; then
-  echo "  VERDICT: PROMPT USABLE BUT SUBOPTIMAL — review warnings before submission" >> "$VERIFY"
-else
-  echo "  VERDICT: PROMPT IS WELL-FORMED FOR CLAUDE SUBMISSION" >> "$VERIFY"
-fi
-
-# ── COMBINED FINAL VERDICT ────────────────────────────────────────────────────
-echo "" >> "$VERIFY"
-echo "════════════════════════════════════════════════════════════" >> "$VERIFY"
-echo "COMBINED VERDICT" >> "$VERIFY"
-echo "════════════════════════════════════════════════════════════" >> "$VERIFY"
-
-total_fail=$((v_fail + e_fail + p_fail))
-total_warn=$((v_warn + e_warn + p_warn))
-total_pass=$((v_pass + e_pass + p_pass))
-
-echo "  Total checks: $((total_pass + total_fail + total_warn))" >> "$VERIFY"
-echo "  PASS : $total_pass" >> "$VERIFY"
-echo "  FAIL : $total_fail" >> "$VERIFY"
-echo "  WARN : $total_warn" >> "$VERIFY"
-echo "" >> "$VERIFY"
-
-if [ $total_fail -eq 0 ] && [ $total_warn -le 3 ]; then
-  echo "  ✅ READY: All three experts approve. Paste $PROMPT_MD into Claude." >> "$VERIFY"
-elif [ $total_fail -eq 0 ]; then
-  echo "  ⚠️  MOSTLY READY: Review warnings above. Paste $PROMPT_MD into Claude." >> "$VERIFY"
-  echo "     Claude will note gaps but can still produce a useful analysis." >> "$VERIFY"
-elif [ $total_fail -le 3 ]; then
-  echo "  ⚠️  USABLE WITH GAPS: $total_fail check(s) failed." >> "$VERIFY"
-  echo "     Paste $PROMPT_MD into Claude but review FAIL items above first." >> "$VERIFY"
-  echo "     Claude's analysis will have blind spots in those areas." >> "$VERIFY"
-else
-  echo "  ❌ NOT READY: $total_fail checks failed across experts." >> "$VERIFY"
-  echo "     Address FAIL items before submitting to Claude or analysis will be unreliable." >> "$VERIFY"
-fi
-
-echo "" >> "$VERIFY"
-echo "Files produced:" >> "$VERIFY"
-echo "  $REPORT   — full raw Db2 + system data" >> "$VERIFY"
-echo "  $PROMPT_MD  — paste into Claude" >> "$VERIFY"
-echo "  $VERIFY — this verification report" >> "$VERIFY"
+vlog ""
+vlog "  Mode          : $MODE"
+vlog "  Prompt size   : ~$((PROMPT_SIZE/1024)) KB"
+vlog "  Incidents     : lock_waits=$total_lw  long_txns=$total_lt  swap=${swap_pct}%"
+vlog "  Connect fails : $_cf / $DB_COUNT"
+vlog ""
+vlog "  ┌─────────────────────────────────────────────────────────┐"
+vlog "  │  RECOMMENDED : $LLM"
+vlog "  │  ALTERNATIVE : $LLM_ALT"
+vlog "  │  Reason: $LLM_REASON"
+vlog "  ├─────────────────────────────────────────────────────────┤"
+vlog "  │  GitHub Copilot → select $LLM → paste $PROMPT_MD"
+vlog "  └─────────────────────────────────────────────────────────┘"
+vlog ""
+vlog "  Decision logic (top-down, first match):"
+vlog "    Incident (lock waits / long txns / swap >90%)  → Claude Opus 4"
+vlog "    Connect failures or prompt gaps                 → Claude Sonnet 4"
+vlog "    Prompt >100 KB                                  → Gemini 1.5 Pro"
+vlog "    Overall mode, clean data                        → GPT-4o"
+vlog "    Weekly, no incidents, clean, <100 KB (default) → Gemini 1.5 Flash"
+vlog ""
+vlog "  Checks: $((total_p+total_f+total_w))  PASS: $total_p  FAIL: $total_f  WARN: $total_w"
+vlog "  $VERDICT"
 
 # ── Console summary ───────────────────────────────────────────────────────────
+ELAPSED=$(( $(date +%s) - SCRIPT_START ))
 echo ""
-echo "══════════════════════════════════════════════════════════"
-echo " db2_ecm_health_check_v2.sh — COMPLETE"
-echo "══════════════════════════════════════════════════════════"
-echo " Report   : $REPORT"
-echo " Prompt   : $PROMPT_MD  ← paste this into Claude"
-echo " Verify   : $VERIFY"
+echo "════════════════════════════════════════════════════════"
+echo " db2_ecm_health_check.sh  [${MODE}]  ${ELAPSED}s"
+echo "════════════════════════════════════════════════════════"
+echo " Report  : $REPORT"
+echo " Prompt  : $PROMPT_MD"
+echo " Verify  : $VERIFY"
 echo ""
-echo " Verification summary:"
-echo "   Db2 DBA   — PASS: $v_pass  FAIL: $v_fail  WARN: $v_warn"
-echo "   ECM Spec  — PASS: $e_pass  FAIL: $e_fail  WARN: $e_warn"
-echo "   Prompt Eng— PASS: $p_pass  FAIL: $p_fail  WARN: $p_warn"
-echo "   TOTAL FAIL: $total_fail"
+echo " Expert verification:"
+echo "   Db2 DBA    PASS=$v_p  FAIL=$v_f  WARN=$v_w"
+echo "   ECM Spec   PASS=$e_p  FAIL=$e_f  WARN=$e_w"
+echo "   Prompt Eng PASS=$p_p  FAIL=$p_f  WARN=$p_w"
+echo "   RHEL Admin PASS=$s_p  FAIL=$s_f  WARN=$s_w"
+echo "   ─────────────────────────────────────────"
+echo "   $VERDICT"
 echo ""
-if [ $total_fail -eq 0 ]; then
-  echo " ✅ All experts approve. Paste $PROMPT_MD into Claude."
-else
-  echo " ⚠️  Review $VERIFY before submitting to Claude."
-fi
-echo "══════════════════════════════════════════════════════════"
+echo " LLM : $LLM  (alt: $LLM_ALT)"
+echo " Paste $PROMPT_MD into GitHub Copilot using $LLM"
+echo "════════════════════════════════════════════════════════"
