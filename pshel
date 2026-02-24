@@ -2,29 +2,44 @@
 # =============================================================================
 # db2_dba_checker.sh  (SAFE + SLOW + DEBUGGABLE MODE)
 #
-# Execution model:
-#   - Parse checklist markdown (tolerant).
+# Execution model (safe/slow):
+#   - Parse checklist markdown (BASH-ONLY parser: resilient under set -euo pipefail)
 #   - For each AUTO check:
 #       * generate a tiny SQL file with @ terminators:
 #           CONNECT ...@
 #           SELECT 'ID|' || ...@
 #           CONNECT RESET@
 #           TERMINATE@
-#       * run: db2 -td@ -vf file.sql
-#       * capture full stdout/stderr in report
-#       * extract ID|VALUE into a results tmp file
+#       * run: db2 -td@ -v -f file.sql
+#       * append the single "ID|VALUE" line to a results tmp file
+#       * write full SQL file + stdout/stderr into the report for debugging
 #
-# This avoids fragile multi-statement db2 -x "<stmt; stmt;>" behaviour.
+# Notes:
+#   - Uses CHAR()/CAST(), not VARCHAR(...) (VARCHAR is a type, not a function).
+#   - Uses monitor function columns:
+#       MON_GET_HADR: HADR_STATE, HADR_SYNCMODE, HADR_CONNECT_STATUS, HADR_LOG_GAP, PEER_WINDOW
+#       MON_GET_TRANSACTION_LOG: TOTAL_LOG_USED, TOTAL_LOG_AVAILABLE, SEC_LOGS_ALLOCATED
+#   - Output evaluation is driven by the checklist "Expected" field, with
+#     per-check DBA logic where Expected is tokenized (e.g., <500MB, CONFIGURED).
+#
+# Usage:
+#   ./db2_dba_checker.sh -d <DBNAME> -s <SCHEMA> [-c <checklist>] [-o <report>] [-u <user>] [-p <pass>]
 # =============================================================================
 
 set -euo pipefail
 umask 077
 
+# =============================================================================
+# Defaults for candidate checks
+# =============================================================================
 DEFAULT_CLUSTERRATIO=80
 DEFAULT_NLEVELS=4
 DEFAULT_UNUSED_DAYS=90
 DEFAULT_FREE_PCT=20
 
+# =============================================================================
+# Colours
+# =============================================================================
 if [ -t 1 ]; then
   RED='\033[0;31m'; YELLOW='\033[1;33m'; GREEN='\033[0;32m'
   CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
@@ -32,6 +47,9 @@ else
   RED=''; YELLOW=''; GREEN=''; CYAN=''; BOLD=''; RESET=''
 fi
 
+# =============================================================================
+# Globals
+# =============================================================================
 DB_NAME=""
 DB_SCHEMA=""
 DB_USER=""
@@ -47,18 +65,26 @@ WARN_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
 
+# Checklist metadata
 declare -A CHECK_TYPE CHECK_RISK CHECK_DESC CHECK_EXPECTED CHECK_SECTION
 AUTO_ORDER=()
 MANUAL_ORDER=()
 
+# Runtime values/results
 declare -A CHECK_VALUE CHECK_RESULT
 
+# =============================================================================
+# Cleanup
+# =============================================================================
 cleanup() {
   [ -n "${TMP_RESULTS:-}" ] && rm -f "$TMP_RESULTS"
   [ -n "${TMP_PARSED:-}" ] && rm -f "$TMP_PARSED"
 }
 trap cleanup EXIT
 
+# =============================================================================
+# Helpers
+# =============================================================================
 usage() {
   cat <<EOF
 Usage: $0 -d <DBNAME> -s <SCHEMA> [-c <checklist>] [-o <report>] [-u <user>] [-p <pass>]
@@ -74,6 +100,48 @@ EOF
   exit 1
 }
 
+log()      { echo -e "$*"; echo -e "$*" >> "$REPORT_FILE"; }
+header()   { log "${BOLD}${CYAN}$*${RESET}"; }
+pass()     { log "  ${GREEN}[PASS]${RESET} $*"; }
+fail()     { log "  ${RED}[FAIL]${RESET} $*"; }
+warn()     { log "  ${YELLOW}[WARN]${RESET} $*"; }
+manual()   { log "  ${CYAN}[MANUAL]${RESET} $*"; }
+skip()     { log "  [SKIP] $*"; }
+
+record() {
+  local id="$1" status="$2" value="$3" msg="$4"
+  CHECK_RESULT["$id"]="$status"
+  CHECK_VALUE["$id"]="$value"
+  case "$status" in
+    PASS) pass "${id}: ${msg} [${value}]"; ((PASS_COUNT++)) ;;
+    WARN) warn "${id}: ${msg} [${value}]"; ((WARN_COUNT++)) ;;
+    FAIL) fail "${id}: ${msg} [${value}]"; ((FAIL_COUNT++)) ;;
+    SKIP) skip "${id}: ${msg}"; ((SKIP_COUNT++)) ;;
+  esac
+}
+
+trim() {
+  # bash-only trim (no external commands)
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+expected_number() {
+  # Extract first numeric token (bash-only-ish: uses pattern scanning)
+  # Falls back to empty if none.
+  local s="$1"
+  if [[ "$s" =~ ([0-9]+([.][0-9]+)?) ]]; then
+    echo "${BASH_REMATCH[1]}"
+  else
+    echo ""
+  fi
+}
+
+# =============================================================================
+# Arg parsing
+# =============================================================================
 while getopts ":d:s:c:o:u:p:h" opt; do
   case $opt in
     d) DB_NAME="$OPTARG" ;;
@@ -97,26 +165,9 @@ if [ -n "$DB_USER" ] && [ -z "$DB_PASS" ]; then
   echo
 fi
 
-log()      { echo -e "$*"; echo -e "$*" >> "$REPORT_FILE"; }
-header()   { log "${BOLD}${CYAN}$*${RESET}"; }
-pass()     { log "  ${GREEN}[PASS]${RESET} $*"; }
-fail()     { log "  ${RED}[FAIL]${RESET} $*"; }
-warn()     { log "  ${YELLOW}[WARN]${RESET} $*"; }
-manual()   { log "  ${CYAN}[MANUAL]${RESET} $*"; }
-skip()     { log "  [SKIP] $*"; }
-
-record() {
-  local id="$1" status="$2" value="$3" msg="$4"
-  CHECK_RESULT["$id"]="$status"
-  CHECK_VALUE["$id"]="$value"
-  case "$status" in
-    PASS) pass "${id}: ${msg} [${value}]"; ((PASS_COUNT++)) ;;
-    WARN) warn "${id}: ${msg} [${value}]"; ((WARN_COUNT++)) ;;
-    FAIL) fail "${id}: ${msg} [${value}]"; ((FAIL_COUNT++)) ;;
-    SKIP) skip "${id}: ${msg}"; ((SKIP_COUNT++)) ;;
-  esac
-}
-
+# =============================================================================
+# Checklist parser (BASH-ONLY: safe under set -euo pipefail)
+# =============================================================================
 parse_checklist() {
   local current_section=""
   AUTO_ORDER=()
@@ -127,56 +178,82 @@ parse_checklist() {
     lineno=$((lineno + 1))
     line="${line%$'\r'}"
 
+    # Section headings
     if [[ "$line" =~ ^##[[:space:]]SECTION:[[:space:]](.+)$ ]]; then
       current_section="${BASH_REMATCH[1]}"
       continue
     fi
 
-    [[ "$line" =~ ^\[(AUTO|MANUAL)\] ]] || continue
+    # Only consider checklist rows
+    [[ "$line" == "[AUTO]"* || "$line" == "[MANUAL]"* ]] || continue
 
-    local pipe_count
-    pipe_count=$(grep -o '|' <<<"$line" | wc -l | tr -d ' ' || true)
-    if [ "${pipe_count:-0}" -lt 3 ]; then
+    # Count pipes safely in bash
+    local pipe_count=$(( ${#line} - ${#line//|/} ))
+    if (( pipe_count < 3 )); then
       {
         echo ""
-        echo "CHECKLIST PARSE WARNING: line ${lineno} starts with [AUTO]/[MANUAL] but has <3 pipes"
+        echo "CHECKLIST PARSE WARNING: line ${lineno} has <3 pipes"
         echo ">> ${line}"
       } >>"$REPORT_FILE"
       continue
     fi
 
-    local left risk desc expected
-    left="$(cut -d'|' -f1 <<<"$line" || true)"
-    risk="$(cut -d'|' -f2 <<<"$line" || true)"
-    desc="$(cut -d'|' -f3 <<<"$line" || true)"
-    expected="$(cut -d'|' -f4- <<<"$line" || true)"
+    # Split first 3 pipes; keep remainder as expected
+    local left risk desc expected tmp
+    IFS='|' read -r left risk desc expected <<<"$line"
+    if (( pipe_count > 3 )); then
+      tmp="${line#*|}"   # remove left|
+      tmp="${tmp#*|}"    # remove risk|
+      tmp="${tmp#*|}"    # remove desc|
+      expected="$tmp"
+    fi
 
-    left="$(sed 's/^[[:space:]]*//;s/[[:space:]]*$//' <<<"$left")"
-    risk="$(sed 's/^[[:space:]]*//;s/[[:space:]]*$//' <<<"$risk")"
-    desc="$(sed 's/^[[:space:]]*//;s/[[:space:]]*$//' <<<"$desc")"
-    expected="$(sed 's/^[[:space:]]*//;s/[[:space:]]*$//' <<<"$expected")"
+    left="$(trim "$left")"
+    risk="$(trim "$risk")"
+    desc="$(trim "$desc")"
+    expected="$(trim "$expected")"
 
+    # Extract TYPE and ID from left
     local type id
-    type="$(grep -Eo '^\[(AUTO|MANUAL)\]' <<<"$left" | tr -d '[]' || true)"
-    id="$(grep -Eo '[A-Z]+[0-9]+' <<<"$left" | head -1 || true)"
-
+    type="${left#\[}"
+    type="${type%%\]*}"
     type="${type^^}"
-    id="${id^^}"
+
+    if [[ "$left" =~ ([A-Z]+[0-9]+) ]]; then
+      id="${BASH_REMATCH[1]}"
+      id="${id^^}"
+    else
+      {
+        echo ""
+        echo "CHECKLIST PARSE WARNING: line ${lineno} missing CHECK_ID"
+        echo ">> ${line}"
+      } >>"$REPORT_FILE"
+      continue
+    fi
+
     risk="${risk^^}"
 
-    if [ -z "$type" ] || [ -z "$id" ] || [ -z "$risk" ] || [ -z "$desc" ] || [ -z "$expected" ]; then
+    # Validate
+    if [[ "$type" != "AUTO" && "$type" != "MANUAL" ]]; then
       {
         echo ""
-        echo "CHECKLIST PARSE WARNING: could not parse line ${lineno}"
+        echo "CHECKLIST PARSE WARNING: line ${lineno} invalid type '${type}'"
         echo ">> ${line}"
       } >>"$REPORT_FILE"
       continue
     fi
-
-    if [[ ! "$risk" =~ ^(HIGH|MEDIUM|LOW)$ ]]; then
+    if [[ "$risk" != "HIGH" && "$risk" != "MEDIUM" && "$risk" != "LOW" ]]; then
       {
         echo ""
-        echo "CHECKLIST PARSE WARNING: invalid risk '${risk}' at line ${lineno}"
+        echo "CHECKLIST PARSE WARNING: line ${lineno} invalid risk '${risk}'"
+        echo ">> ${line}"
+      } >>"$REPORT_FILE"
+      continue
+    fi
+    if [[ -z "$desc" || -z "$expected" ]]; then
+      {
+        echo ""
+        echo "CHECKLIST PARSE WARNING: line ${lineno} missing desc/expected"
         echo ">> ${line}"
       } >>"$REPORT_FILE"
       continue
@@ -188,16 +265,22 @@ parse_checklist() {
     CHECK_EXPECTED["$id"]="$expected"
     CHECK_SECTION["$id"]="$current_section"
 
-    if [ "$type" = "AUTO" ]; then
+    if [[ "$type" == "AUTO" ]]; then
       AUTO_ORDER+=("$id")
     else
       MANUAL_ORDER+=("$id")
     fi
   done < "$CHECKLIST_FILE"
 
-  [ "${#AUTO_ORDER[@]}" -eq 0 ] && { echo "ERROR: No [AUTO] checks parsed. See report: $REPORT_FILE" >&2; exit 1; }
+  if [ "${#AUTO_ORDER[@]}" -eq 0 ]; then
+    echo "ERROR: No [AUTO] checks parsed. See report for warnings: $REPORT_FILE" >&2
+    exit 1
+  fi
 }
 
+# =============================================================================
+# DB2 preflight (file mode, @ terminator)
+# =============================================================================
 preflight_db2() {
   header "Preflight: DB2 environment and connectivity"
 
@@ -213,8 +296,9 @@ preflight_db2() {
     echo "DB2INSTANCE=${DB2INSTANCE:-<unset>}"
   } >>"$REPORT_FILE" 2>&1
 
-  local probe
+  local probe out
   probe="$(mktemp /tmp/db2_probe_XXXXXX.sql)"
+
   if [ -n "$DB_USER" ]; then
     cat >"$probe" <<SQL
 CONNECT TO ${DB_NAME} USER ${DB_USER} USING ${DB_PASS}@
@@ -231,11 +315,17 @@ TERMINATE@
 SQL
   fi
 
-  local out
-  out="$(db2 -td@ -vf "$probe" 2>>"$REPORT_FILE" || true)"
+  out="$(db2 -td@ -v -f "$probe" 2>>"$REPORT_FILE" || true)"
   rm -f "$probe"
 
-  if ! echo "$out" | awk '{gsub(/^[ \t]+|[ \t]+$/, "", $0); print}' | grep -qx "1"; then
+  # Check "1" appears on its own trimmed line
+  local ok="NO"
+  while IFS= read -r ln; do
+    ln="$(trim "$ln")"
+    if [ "$ln" = "1" ]; then ok="YES"; break; fi
+  done <<<"$out"
+
+  if [ "$ok" != "YES" ]; then
     fail "Preflight failed (CONNECT/VALUES 1). Check report for DB2 errors."
     {
       echo "---- Preflight stdout ----"
@@ -243,10 +333,13 @@ SQL
     } >>"$REPORT_FILE"
     exit 1
   fi
+
   pass "DB2 CLI can connect to ${DB_NAME}"
 }
 
-# Each check returns a single line: ID|VALUE
+# =============================================================================
+# SQL per check (each returns one row: ID|VALUE). Statements MUST end with @
+# =============================================================================
 sql_for_check() {
   local id="$1"
   case "$id" in
@@ -288,9 +381,12 @@ sql_for_check() {
   esac
 }
 
+# =============================================================================
+# Execute one check via file mode (-td@ -v -f)
+# =============================================================================
 run_one_check_filemode() {
   local id="$1"
-  local select_stmt="$2"   # must already end with @
+  local select_stmt="$2"   # includes trailing @
 
   local qf out
   qf="$(mktemp /tmp/db2_check_${id}_XXXXXX.sql)"
@@ -320,7 +416,6 @@ SQL
     echo "------------------------------------------------"
   } >>"$REPORT_FILE"
 
-  # -v echoes statements; -td@ uses @ terminator
   out="$(db2 -td@ -v -f "$qf" 2>>"$REPORT_FILE" || true)"
   rm -f "$qf"
 
@@ -329,14 +424,16 @@ SQL
     echo "$out"
   } >>"$REPORT_FILE"
 
-  echo "$out" | awk -v id="$id" '
-    {
-      gsub(/^[ \t]+|[ \t]+$/, "", $0);
-      if ($0 ~ ("^" id "\\|")) print $0;
-    }
-  ' >>"$TMP_RESULTS"
+  # Extract only ID|VALUE lines (trim each line)
+  while IFS= read -r ln; do
+    ln="$(trim "$ln")"
+    [[ "$ln" == "${id}|"* ]] && echo "$ln" >>"$TMP_RESULTS"
+  done <<<"$out"
 }
 
+# =============================================================================
+# Run all AUTO checks
+# =============================================================================
 run_all_auto_checks() {
   header "Running AUTO checks (SAFE/SLOW/DEBUG: one db2 file per check)..."
 
@@ -354,16 +451,17 @@ run_all_auto_checks() {
     run_one_check_filemode "$id" "$sel"
   done
 
-  awk '
-    {
-      gsub(/^[ \t]+|[ \t]+$/, "", $0);
-      if ($0 ~ /^[A-Z][A-Z0-9]*[0-9]\|/) print $0;
-    }
-  ' "$TMP_RESULTS" >"$TMP_PARSED"
+  # Normalize parsed lines: first value wins per ID
+  : >"$TMP_PARSED"
+  while IFS= read -r ln; do
+    ln="$(trim "$ln")"
+    [[ "$ln" =~ ^[A-Z][A-Z0-9]*[0-9]\| ]] || continue
+    echo "$ln" >>"$TMP_PARSED"
+  done <"$TMP_RESULTS"
 
   while IFS='|' read -r id rest; do
-    [ -n "${id:-}" ] || continue
-    rest="$(echo "$rest" | sed 's/^[ \t]*//;s/[ \t]*$//')"
+    id="${id^^}"
+    rest="$(trim "$rest")"
     if [ -z "${CHECK_VALUE[$id]:-}" ]; then
       CHECK_VALUE["$id"]="$rest"
     fi
@@ -371,8 +469,10 @@ run_all_auto_checks() {
 }
 
 get_value() { local id="$1"; echo "${CHECK_VALUE[$id]:-NO_RESULT}"; }
-expected_number() { echo "${1:-}" | grep -Eo '[0-9]+([.][0-9]+)?' | head -1 || true; }
 
+# =============================================================================
+# Evaluate results against checklist Expected
+# =============================================================================
 evaluate_auto_checks() {
   local last_section="" id desc exp val
 
@@ -503,6 +603,9 @@ print_summary() {
   log "\n${CYAN}Review manual checklist items above before any REORG or maintenance activity.${RESET}"
 }
 
+# =============================================================================
+# Main
+# =============================================================================
 main() {
   {
     echo "================================================================="
