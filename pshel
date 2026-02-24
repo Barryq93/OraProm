@@ -1,91 +1,824 @@
-# DB2 DBA Health Checklist
-# Format: [TYPE] CHECK_ID | Risk | Description | Expected
-# TYPE: AUTO = script can verify, MANUAL = requires DBA eyes on it
-# Risk: HIGH / MEDIUM / LOW
-# This file is parsed by db2_dba_checker.sh — do not alter the pipe-delimited structure of checklist lines
+#!/bin/bash
+# =============================================================================
+# db2_dba_checker.sh
+# DB2 DBA Health Checker — parses db2_dba_checklist.md and runs AUTO checks
+#
+# IMPORTANT — CONNECTION HANDLING:
+#   All DB2 queries are batched into a single .clp file and executed in one
+#   db2 -f invocation. Do NOT refactor individual checks into subshells that
+#   each call "db2 connect" — each db2 CLI invocation is a separate process
+#   and inherits no connection state from the parent or sibling calls.
+#   The .clp approach keeps a single session open for all checks.
+#
+# Usage:
+#   ./db2_dba_checker.sh -d <DBNAME> -s <SCHEMA> -c <CHECKLIST_FILE>
+#
+# Options:
+#   -d  Database name (required)
+#   -s  Schema name (required)
+#   -c  Checklist file path (default: db2_dba_checklist.md)
+#   -o  Output report file (default: db2_health_<timestamp>.txt)
+#   -u  DB2 user (optional — uses current OS user if omitted)
+#   -p  DB2 password (optional — prompts if -u is set and -p is omitted)
+#   -h  Help
+#
+# Notes:
+#   - Fixed "No authorized routine named VARCHAR" by removing VARCHAR(...) calls.
+#     Use CHAR()/CAST(...) instead (VARCHAR is a datatype, not a function).
+#   - Fixed HADR peer window column usage: use PEER_WINDOW (from MON_GET_HADR).
+#   - Fixed log utilization: computed from MON_GET_TRANSACTION_LOG elements
+#     (TOTAL_LOG_USED / (TOTAL_LOG_USED+TOTAL_LOG_AVAILABLE)).
+#   - Fixed secondary log usage: use SEC_LOGS_ALLOCATED (count), not SEC_LOG_USED_KB.
+#   - Added schema comparisons using UPPER() for safety.
+#   - Captures DB2 stderr into report file (no more 2>/dev/null).
+# =============================================================================
 
----
+set -euo pipefail
+umask 077
 
-## SECTION: Log Configuration
+# =============================================================================
+# CONFIG — Adjust thresholds to match your environment
+# =============================================================================
+THRESH_LOGFILSIZ=65536          # 256MB — recommended for HADR NEARSYNC
+THRESH_LOGPRIMARY=50            # minimum primary log files
+THRESH_LOGSECOND=600            # minimum secondary log files
+THRESH_LOGBUFSZ=65536           # 256MB in-memory log buffer
+THRESH_HADR_LOG_GAP_MB=500      # MB — warn if HADR lag exceeds this
+THRESH_CLUSTERRATIO=80          # indexes below this need REORG attention
+THRESH_NLEVELS=4                # B-tree depth above this is a concern
+THRESH_LOG_UTIL_PCT=60          # % — warn if log utilisation exceeds this
+THRESH_REC_HIS_RETENTN=35       # days
+THRESH_NUM_DB_BACKUPS=3
+THRESH_INDEX_UNUSED_DAYS=90
+THRESH_TABLE_FREE_PCT=20        # % — tables with more free space than this flagged
+THRESH_CERT_EXPIRY_DAYS=60      # warn if cert expires within this many days
 
-[AUTO]   LOG001 | HIGH   | LOGFILSIZ is 65536 (256MB) — optimal for HADR NEARSYNC                      | 65536
-[AUTO]   LOG002 | HIGH   | LOGPRIMARY >= 50 (~12GB primary log space)                                   | 50
-[AUTO]   LOG003 | HIGH   | LOGSECOND >= 600 (~150GB secondary — covers worst case REORG log burst)      | 600
-[AUTO]   LOG004 | MEDIUM | LOGBUFSZ >= 65536 (256MB in-memory log buffer)                              | 65536
-[AUTO]   LOG005 | HIGH   | LOGARCHCOMPR1 is ON (50-70% NAS space reduction)                            | ON
-[AUTO]   LOG006 | HIGH   | LOGARCHMETH1 is configured (not blank or LOGRETAIN)                         | CONFIGURED
-[AUTO]   LOG007 | MEDIUM | LOGARCHMETH2 is configured (dual destination — NAS fallback)                | CONFIGURED
-[MANUAL] LOG008 | HIGH   | NAS archive mount is dedicated to DB2 — not shared with other workloads     | VERIFIED
-[MANUAL] LOG009 | HIGH   | NFS mount options set: hard mount, appropriate timeo and retrans values     | VERIFIED
-[MANUAL] LOG010 | MEDIUM | NAS filesystem utilisation is below 70%                                     | VERIFIED
+# =============================================================================
+# Colours — disabled automatically if not a terminal
+# =============================================================================
+if [ -t 1 ]; then
+    RED='\033[0;31m'; YELLOW='\033[1;33m'; GREEN='\033[0;32m'
+    CYAN='\033[0;36m'; BOLD='\033[1m'; RESET='\033[0m'
+else
+    RED=''; YELLOW=''; GREEN=''; CYAN=''; BOLD=''; RESET=''
+fi
 
----
+# =============================================================================
+# Globals
+# =============================================================================
+DB_NAME=""
+DB_SCHEMA=""
+DB_USER=""
+DB_PASS=""
+CHECKLIST_FILE="db2_dba_checklist.md"
+REPORT_FILE="db2_health_$(date +%Y%m%d_%H%M%S).txt"
+TMP_CLP=""
+TMP_OUT=""
+PASS_COUNT=0
+WARN_COUNT=0
+FAIL_COUNT=0
+SKIP_COUNT=0
+declare -A CHECK_RESULTS    # CHECK_ID -> PASS|FAIL|WARN|SKIP
+declare -A CHECK_VALUES     # CHECK_ID -> actual value found
 
-## SECTION: Recovery History and Retention
+# =============================================================================
+# Cleanup — removes temp files on exit regardless of how script ends
+# =============================================================================
+cleanup() {
+    [ -n "${TMP_CLP:-}" ] && rm -f "$TMP_CLP"
+    [ -n "${TMP_OUT:-}" ] && rm -f "$TMP_OUT"
+}
+trap cleanup EXIT
 
-[AUTO]   REC001 | HIGH   | AUTO_DEL_REC_OBJ is ON (physical archive logs cleaned with history prune)  | ON
-[AUTO]   REC002 | MEDIUM | REC_HIS_RETENTN is 35 days (aligned to backup retention + buffer)           | 35
-[AUTO]   REC003 | MEDIUM | NUM_DB_BACKUPS >= 3 (minimum recovery chains retained)                      | 3
-[AUTO]   REC004 | MEDIUM | Recovery history contains at least one FULL backup in the last 7 days       | PRESENT
-[AUTO]   REC005 | HIGH   | No backup failures in recovery history in last 7 days                       | NONE
+# =============================================================================
+# Usage
+# =============================================================================
+usage() {
+    cat <<EOF
+Usage: $0 -d <DBNAME> -s <SCHEMA> [-c <checklist>] [-o <report>] [-u <user>] [-p <pass>]
 
----
+  -d  Database name           (required)
+  -s  Schema name             (required)
+  -c  Checklist .md file      (default: db2_dba_checklist.md)
+  -o  Output report file      (default: db2_health_<timestamp>.txt)
+  -u  DB2 username            (optional)
+  -p  DB2 password            (optional — prompts securely if -u set without -p)
+  -h  Show this help
 
-## SECTION: HADR Health
+EOF
+    exit 1
+}
 
-[AUTO]   HADR001 | HIGH   | HADR_STATE is PEER                                                        | PEER
-[AUTO]   HADR002 | HIGH   | HADR_SYNCMODE is NEARSYNC                                                 | NEARSYNC
-[AUTO]   HADR003 | HIGH   | HADR_CONNECT_STATUS is CONNECTED                                          | CONNECTED
-[AUTO]   HADR004 | HIGH   | HADR_LOG_GAP is below 500MB                                               | <500MB
-[AUTO]   HADR005 | MEDIUM | HADR_PEER_WINDOW_END is set (not null — peer window is configured)         | SET
-[MANUAL] HADR006 | HIGH   | Network latency between primary and standby is acceptable for NEARSYNC    | VERIFIED
-[MANUAL] HADR007 | MEDIUM | Standby server has adequate disk for log replay accumulation              | VERIFIED
-[MANUAL] HADR008 | HIGH   | HADR failover has been tested in the last 6 months                        | VERIFIED
+# =============================================================================
+# Argument parsing
+# =============================================================================
+while getopts ":d:s:c:o:u:p:h" opt; do
+    case $opt in
+        d) DB_NAME="$OPTARG" ;;
+        s) DB_SCHEMA="$OPTARG" ;;
+        c) CHECKLIST_FILE="$OPTARG" ;;
+        o) REPORT_FILE="$OPTARG" ;;
+        u) DB_USER="$OPTARG" ;;
+        p) DB_PASS="$OPTARG" ;;
+        h) usage ;;
+        :) echo "Option -$OPTARG requires an argument." >&2; usage ;;
+        \?) echo "Unknown option: -$OPTARG" >&2; usage ;;
+    esac
+done
 
----
+[ -z "$DB_NAME" ]   && { echo "ERROR: -d <DBNAME> is required." >&2; usage; }
+[ -z "$DB_SCHEMA" ] && { echo "ERROR: -s <SCHEMA> is required." >&2; usage; }
 
-## SECTION: Archive Log Storage (HCP / S3)
+if [ ! -f "$CHECKLIST_FILE" ]; then
+    echo "ERROR: Checklist file not found: $CHECKLIST_FILE" >&2
+    exit 1
+fi
 
-[AUTO]   ARC001 | HIGH   | LOGARCHMETH1 is set to S3 (HCP object storage preferred over NFS)         | S3
-[MANUAL] ARC002 | HIGH   | HCP S3 endpoint is reachable from the DB2 server                          | VERIFIED
-[MANUAL] ARC003 | HIGH   | GSKit keystore exists at expected path on DB2 server                      | VERIFIED
-[MANUAL] ARC004 | HIGH   | mTLS client certificate is valid and not expiring within 60 days          | VERIFIED
-[MANUAL] ARC005 | HIGH   | HCP server certificate CN/SAN matches DB2_S3_ENDPOINT hostname exactly    | VERIFIED
-[MANUAL] ARC006 | HIGH   | HCP tenant is configured to require client certificates (mTLS enforced)   | VERIFIED
-[MANUAL] ARC007 | MEDIUM | HCP lifecycle policy is set to 45-50 days on the archive log bucket       | VERIFIED
-[MANUAL] ARC008 | MEDIUM | Certificate rotation runbook is documented and calendar reminder is set   | VERIFIED
-[MANUAL] ARC009 | MEDIUM | DB2_S3_SSL_SERVER_VERIFY is TRUE in db2set output                        | VERIFIED
+# Prompt for password securely if user provided but no password
+if [ -n "$DB_USER" ] && [ -z "$DB_PASS" ]; then
+    read -rsp "DB2 password for ${DB_USER}@${DB_NAME}: " DB_PASS
+    echo
+fi
 
----
+# =============================================================================
+# Logging helpers
+# =============================================================================
+log()      { echo -e "$*"; echo -e "$*" >> "$REPORT_FILE"; }
+log_raw()  { echo "$*" >> "$REPORT_FILE"; }
+header()   { log "${BOLD}${CYAN}$*${RESET}"; }
+pass()     { log "  ${GREEN}[PASS]${RESET} $*"; }
+fail()     { log "  ${RED}[FAIL]${RESET} $*"; }
+warn()     { log "  ${YELLOW}[WARN]${RESET} $*"; }
+manual()   { log "  ${CYAN}[MANUAL]${RESET} $*"; }
+skip()     { log "  [SKIP] $*"; }
 
-## SECTION: REORG Readiness
+# =============================================================================
+# Build the CLP file
+# All queries are issued in a single db2 -f session.
+# Each query returns a tagged row: CHECK_ID|VALUE
+#
+# Key fixes:
+#   - Removed VARCHAR(...) function calls (not valid in LUW).
+#   - Used CHAR()/CAST() for stringification.
+#   - Computed log utilization from MON_GET_TRANSACTION_LOG monitor elements.
+#   - Use SEC_LOGS_ALLOCATED (count).
+#   - Use PEER_WINDOW (not hadr_peer_window*) from MON_GET_HADR.
+#   - Use UPPER() for schema comparisons and string normalisation.
+# =============================================================================
+build_clp() {
+    TMP_CLP=$(mktemp /tmp/db2_checker_XXXXXX.clp)
+    TMP_OUT=$(mktemp /tmp/db2_checker_XXXXXX.out)
 
-[AUTO]   REO001 | HIGH   | Current log space utilisation is below 60% (headroom for REORG burst)     | <60%
-[AUTO]   REO002 | HIGH   | HADR_STATE is PEER — do not REORG if standby is not in peer state         | PEER
-[AUTO]   REO003 | HIGH   | Secondary log space is not currently being consumed (LOGSECOND at rest)   | 0
-[AUTO]   REO004 | MEDIUM | Indexes with CLUSTERRATIO below 80 — candidates for REORG                 | IDENTIFIED
-[AUTO]   REO005 | MEDIUM | Indexes with NLEVELS above 4 — may indicate excessive fragmentation        | IDENTIFIED
-[AUTO]   REO006 | LOW    | Indexes unused for 90+ days — candidates for review/drop                  | IDENTIFIED
-[AUTO]   REO007 | MEDIUM | Table free page percentage — tables with >20% free pages need REORG       | IDENTIFIED
-[MANUAL] REO008 | HIGH   | Full database backup completed before any offline REORG                   | VERIFIED
-[MANUAL] REO009 | HIGH   | Maintenance window is confirmed and communicated                          | VERIFIED
-[MANUAL] REO010 | HIGH   | LOGSECOND 600 verified as adequate before offline REORG on 70GB indexes   | VERIFIED
-[MANUAL] REO011 | MEDIUM | Online REORG preferred over offline unless deep maintenance window exists  | VERIFIED
-[MANUAL] REO012 | MEDIUM | Index REORGs to be staggered — not all 70GB rebuilt simultaneously        | VERIFIED
+    # Determine connect statement
+    if [ -n "$DB_USER" ]; then
+        CONNECT_STMT="CONNECT TO ${DB_NAME} USER ${DB_USER} USING ${DB_PASS};"
+    else
+        CONNECT_STMT="CONNECT TO ${DB_NAME};"
+    fi
 
----
+    cat > "$TMP_CLP" << ENDCLP
+${CONNECT_STMT}
 
-## SECTION: Index Health
+-- ==========================================================================
+-- LOG001: LOGFILSIZ (aggregate in case multiple members)
+-- ==========================================================================
+SELECT 'LOG001|' || RTRIM(CHAR(MAX(VALUE)))
+FROM SYSIBMADM.DBCFG
+WHERE UPPER(NAME) = 'LOGFILSIZ';
 
-[AUTO]   IDX001 | MEDIUM | Index to table size ratio — 70GB indexes / 30GB table data flagged        | REVIEWED
-[AUTO]   IDX002 | LOW    | Indexes unused for 90+ days listed for DBA review                         | LISTED
-[AUTO]   IDX003 | MEDIUM | Indexes with NLEVELS > 4 listed (excessive B-tree depth = fragmentation)  | LISTED
+-- ==========================================================================
+-- LOG002: LOGPRIMARY
+-- ==========================================================================
+SELECT 'LOG002|' || RTRIM(CHAR(MAX(VALUE)))
+FROM SYSIBMADM.DBCFG
+WHERE UPPER(NAME) = 'LOGPRIMARY';
 
----
+-- ==========================================================================
+-- LOG003: LOGSECOND
+-- ==========================================================================
+SELECT 'LOG003|' || RTRIM(CHAR(MAX(VALUE)))
+FROM SYSIBMADM.DBCFG
+WHERE UPPER(NAME) = 'LOGSECOND';
 
-## SECTION: Post-Change Verification (Run after any configuration change)
+-- ==========================================================================
+-- LOG004: LOGBUFSZ
+-- ==========================================================================
+SELECT 'LOG004|' || RTRIM(CHAR(MAX(VALUE)))
+FROM SYSIBMADM.DBCFG
+WHERE UPPER(NAME) = 'LOGBUFSZ';
 
-[MANUAL] POST001 | HIGH   | Log archive completes successfully after config change (check db2diag.log) | VERIFIED
-[MANUAL] POST002 | HIGH   | HADR log gap is stable and not growing after config change                | VERIFIED
-[MANUAL] POST003 | MEDIUM | db2diag.log reviewed for warnings or errors after changes                 | VERIFIED
-[MANUAL] POST004 | MEDIUM | MON_GET_TRANSACTION_LOG shows expected log utilisation                    | VERIFIED
+-- ==========================================================================
+-- LOG005: LOGARCHCOMPR1
+-- ==========================================================================
+SELECT 'LOG005|' || COALESCE(UPPER(RTRIM(CHAR(MAX(VALUE)))), 'NULL')
+FROM SYSIBMADM.DBCFG
+WHERE UPPER(NAME) = 'LOGARCHCOMPR1';
+
+-- ==========================================================================
+-- LOG006: LOGARCHMETH1 configured
+-- ==========================================================================
+SELECT 'LOG006|' ||
+       CASE
+         WHEN MAX(VALUE) IS NULL OR RTRIM(CHAR(MAX(VALUE))) = '' OR UPPER(RTRIM(CHAR(MAX(VALUE)))) = 'LOGRETAIN'
+           THEN 'NOT_CONFIGURED'
+         ELSE 'CONFIGURED'
+       END
+FROM SYSIBMADM.DBCFG
+WHERE UPPER(NAME) = 'LOGARCHMETH1';
+
+-- ==========================================================================
+-- LOG007: LOGARCHMETH2 configured
+-- ==========================================================================
+SELECT 'LOG007|' ||
+       CASE
+         WHEN MAX(VALUE) IS NULL OR RTRIM(CHAR(MAX(VALUE))) = '' OR UPPER(RTRIM(CHAR(MAX(VALUE)))) = 'OFF'
+           THEN 'NOT_CONFIGURED'
+         ELSE 'CONFIGURED'
+       END
+FROM SYSIBMADM.DBCFG
+WHERE UPPER(NAME) = 'LOGARCHMETH2';
+
+-- ==========================================================================
+-- REC001: AUTO_DEL_REC_OBJ
+-- ==========================================================================
+SELECT 'REC001|' || COALESCE(UPPER(RTRIM(CHAR(MAX(VALUE)))), 'NULL')
+FROM SYSIBMADM.DBCFG
+WHERE UPPER(NAME) = 'AUTO_DEL_REC_OBJ';
+
+-- ==========================================================================
+-- REC002: REC_HIS_RETENTN
+-- ==========================================================================
+SELECT 'REC002|' || RTRIM(CHAR(MAX(VALUE)))
+FROM SYSIBMADM.DBCFG
+WHERE UPPER(NAME) = 'REC_HIS_RETENTN';
+
+-- ==========================================================================
+-- REC003: NUM_DB_BACKUPS
+-- ==========================================================================
+SELECT 'REC003|' || RTRIM(CHAR(MAX(VALUE)))
+FROM SYSIBMADM.DBCFG
+WHERE UPPER(NAME) = 'NUM_DB_BACKUPS';
+
+-- ==========================================================================
+-- REC004: Full backup in last 7 days (DB_HISTORY START_TIME is VARCHAR(14))
+-- ==========================================================================
+SELECT 'REC004|' ||
+       CASE
+         WHEN COUNT(*) > 0 THEN 'PRESENT'
+         ELSE 'ABSENT'
+       END
+FROM SYSIBMADM.DB_HISTORY
+WHERE OPERATION = 'B'
+  AND OPERATIONTYPE = 'F'
+  AND TIMESTAMP_FORMAT(START_TIME, 'YYYYMMDDHH24MISS') >= (CURRENT TIMESTAMP - 7 DAYS);
+
+-- ==========================================================================
+-- REC005: No backup failures in last 7 days
+-- ==========================================================================
+SELECT 'REC005|' ||
+       CASE
+         WHEN COUNT(*) = 0 THEN 'NONE'
+         ELSE RTRIM(CHAR(COUNT(*))) || '_FAILURES'
+       END
+FROM SYSIBMADM.DB_HISTORY
+WHERE OPERATION = 'B'
+  AND SQLCODE < 0
+  AND TIMESTAMP_FORMAT(START_TIME, 'YYYYMMDDHH24MISS') >= (CURRENT TIMESTAMP - 7 DAYS);
+
+-- ==========================================================================
+-- HADR001: HADR_STATE
+-- ==========================================================================
+SELECT 'HADR001|' || UPPER(RTRIM(CHAR(HADR_STATE)))
+FROM TABLE(SYSPROC.MON_GET_HADR(NULL))
+FETCH FIRST 1 ROW ONLY;
+
+-- ==========================================================================
+-- HADR002: HADR_SYNCMODE
+-- ==========================================================================
+SELECT 'HADR002|' || UPPER(RTRIM(CHAR(HADR_SYNCMODE)))
+FROM TABLE(SYSPROC.MON_GET_HADR(NULL))
+FETCH FIRST 1 ROW ONLY;
+
+-- ==========================================================================
+-- HADR003: HADR_CONNECT_STATUS
+-- ==========================================================================
+SELECT 'HADR003|' || UPPER(RTRIM(CHAR(HADR_CONNECT_STATUS)))
+FROM TABLE(SYSPROC.MON_GET_HADR(NULL))
+FETCH FIRST 1 ROW ONLY;
+
+-- ==========================================================================
+-- HADR004: HADR_LOG_GAP in MB
+-- ==========================================================================
+SELECT 'HADR004|' || RTRIM(CHAR(DECIMAL(HADR_LOG_GAP / 1048576.0, 10, 2)))
+FROM TABLE(SYSPROC.MON_GET_HADR(NULL))
+FETCH FIRST 1 ROW ONLY;
+
+-- ==========================================================================
+-- HADR005: PEER_WINDOW configured (uses PEER_WINDOW)
+-- ==========================================================================
+SELECT 'HADR005|' ||
+       CASE
+         WHEN PEER_WINDOW IS NOT NULL AND PEER_WINDOW > 0 THEN 'SET'
+         ELSE 'NOT_SET'
+       END
+FROM TABLE(SYSPROC.MON_GET_HADR(NULL))
+FETCH FIRST 1 ROW ONLY;
+
+-- ==========================================================================
+-- ARC001: LOGARCHMETH1 is S3 (string begins with S3)
+-- ==========================================================================
+SELECT 'ARC001|' ||
+       CASE
+         WHEN UPPER(RTRIM(CHAR(MAX(VALUE)))) LIKE 'S3%' THEN 'S3'
+         ELSE COALESCE(RTRIM(CHAR(MAX(VALUE))), 'NULL')
+       END
+FROM SYSIBMADM.DBCFG
+WHERE UPPER(NAME) = 'LOGARCHMETH1';
+
+-- ==========================================================================
+-- REO001: Current log space utilisation % (computed from monitor elements)
+-- ==========================================================================
+SELECT 'REO001|' ||
+       RTRIM(CHAR(
+         DECIMAL(
+           (DOUBLE(TOTAL_LOG_USED) * 100.0) /
+           NULLIF(DOUBLE(TOTAL_LOG_USED + TOTAL_LOG_AVAILABLE), 0),
+           5, 1
+         )
+       ))
+FROM TABLE(SYSPROC.MON_GET_TRANSACTION_LOG(-1))
+FETCH FIRST 1 ROW ONLY;
+
+-- ==========================================================================
+-- REO002: HADR state is PEER (safe for REORG) — explicit duplication
+-- ==========================================================================
+SELECT 'REO002|' || UPPER(RTRIM(CHAR(HADR_STATE)))
+FROM TABLE(SYSPROC.MON_GET_HADR(NULL))
+FETCH FIRST 1 ROW ONLY;
+
+-- ==========================================================================
+-- REO003: Secondary logs allocated (count)
+-- ==========================================================================
+SELECT 'REO003|' || RTRIM(CHAR(SEC_LOGS_ALLOCATED))
+FROM TABLE(SYSPROC.MON_GET_TRANSACTION_LOG(-1))
+FETCH FIRST 1 ROW ONLY;
+
+-- ==========================================================================
+-- REO004: Indexes with CLUSTERRATIO below threshold
+-- ==========================================================================
+SELECT 'REO004|' || RTRIM(CHAR(COUNT(*)))
+FROM SYSCAT.INDEXES
+WHERE UPPER(TABSCHEMA) = UPPER('${DB_SCHEMA}')
+  AND CLUSTERRATIO IS NOT NULL
+  AND CLUSTERRATIO >= 0
+  AND CLUSTERRATIO < ${THRESH_CLUSTERRATIO}
+  AND UNIQUERULE <> 'P';
+
+-- ==========================================================================
+-- REO005: Indexes with NLEVELS above threshold
+-- ==========================================================================
+SELECT 'REO005|' || RTRIM(CHAR(COUNT(*)))
+FROM SYSCAT.INDEXES
+WHERE UPPER(TABSCHEMA) = UPPER('${DB_SCHEMA}')
+  AND NLEVELS IS NOT NULL
+  AND NLEVELS >= 0
+  AND NLEVELS > ${THRESH_NLEVELS};
+
+-- ==========================================================================
+-- REO006: Indexes unused for N days
+-- ==========================================================================
+SELECT 'REO006|' || RTRIM(CHAR(COUNT(*)))
+FROM SYSCAT.INDEXES
+WHERE UPPER(TABSCHEMA) = UPPER('${DB_SCHEMA}')
+  AND LASTUSED <> DATE('0001-01-01')
+  AND LASTUSED < CURRENT DATE - ${THRESH_INDEX_UNUSED_DAYS} DAYS;
+
+-- ==========================================================================
+-- REO007: Tables with high free page percentage
+-- ==========================================================================
+SELECT 'REO007|' || RTRIM(CHAR(COUNT(*)))
+FROM SYSCAT.TABLES
+WHERE UPPER(TABSCHEMA) = UPPER('${DB_SCHEMA}')
+  AND TYPE = 'T'
+  AND NPAGES > 0
+  AND DECIMAL((DOUBLE(FPAGES) / DOUBLE(NPAGES)) * 100.0, 5, 2) > ${THRESH_TABLE_FREE_PCT};
+
+-- ==========================================================================
+-- IDX001: Index to table size ratio flag
+-- ==========================================================================
+SELECT 'IDX001|' ||
+       CASE
+         WHEN SUM(I.NLEAF) > 0 AND SUM(T.NPAGES) > 0
+           THEN RTRIM(CHAR(DECIMAL(DOUBLE(SUM(I.NLEAF)) / DOUBLE(SUM(T.NPAGES)), 6, 2)))
+         ELSE 'NO_DATA'
+       END
+FROM SYSCAT.TABLES T
+JOIN SYSCAT.INDEXES I
+  ON T.TABNAME = I.TABNAME
+ AND T.TABSCHEMA = I.TABSCHEMA
+WHERE UPPER(T.TABSCHEMA) = UPPER('${DB_SCHEMA}')
+  AND T.TYPE = 'T';
+
+-- ==========================================================================
+-- IDX002: Count of unused indexes (same as REO006 — surfaced in index section)
+-- ==========================================================================
+SELECT 'IDX002|' || RTRIM(CHAR(COUNT(*)))
+FROM SYSCAT.INDEXES
+WHERE UPPER(TABSCHEMA) = UPPER('${DB_SCHEMA}')
+  AND LASTUSED <> DATE('0001-01-01')
+  AND LASTUSED < CURRENT DATE - ${THRESH_INDEX_UNUSED_DAYS} DAYS;
+
+-- ==========================================================================
+-- IDX003: Count of indexes with excessive B-tree depth
+-- ==========================================================================
+SELECT 'IDX003|' || RTRIM(CHAR(COUNT(*)))
+FROM SYSCAT.INDEXES
+WHERE UPPER(TABSCHEMA) = UPPER('${DB_SCHEMA}')
+  AND NLEVELS IS NOT NULL
+  AND NLEVELS >= 0
+  AND NLEVELS > ${THRESH_NLEVELS};
+
+CONNECT RESET;
+ENDCLP
+}
+
+# =============================================================================
+# Execute the CLP file in a single db2 session
+# -x  suppress column headers (clean output for parsing)
+# -f  read from file
+# -t  use semicolon as statement terminator
+#
+# IMPORTANT:
+#   - stderr is appended to the report (do not suppress errors)
+#   - db2 can exit non-zero on warnings; we do not treat that as fatal here
+# =============================================================================
+run_checks() {
+    header "Running DB2 automated checks against ${DB_NAME} (schema: ${DB_SCHEMA})..."
+    echo ""
+
+    db2 -x -f "$TMP_CLP" -t 2>>"$REPORT_FILE" | \
+        grep '^[A-Z][A-Z0-9]*[0-9][|]' | \
+        awk '{gsub(/^[ \t]+|[ \t]+$/, "", $0); print}' \
+        > "$TMP_OUT" || true
+}
+
+# =============================================================================
+# Retrieve a check result from the captured output
+# =============================================================================
+get_result() {
+    local check_id="$1"
+    local line
+    line=$(grep "^${check_id}|" "$TMP_OUT" | head -1 || true)
+    if [ -z "$line" ]; then
+        echo "NO_RESULT"
+        return
+    fi
+    echo "${line#*|}" | sed 's/^[ \t]*//;s/[ \t]*$//'
+}
+
+# =============================================================================
+# Record and display a check result
+# =============================================================================
+record() {
+    local id="$1" status="$2" value="$3" description="$4"
+    CHECK_RESULTS[$id]="$status"
+    CHECK_VALUES[$id]="$value"
+    case "$status" in
+        PASS) pass "${id}: ${description} [${value}]"; (( PASS_COUNT++ )) ;;
+        FAIL) fail "${id}: ${description} [${value}]"; (( FAIL_COUNT++ )) ;;
+        WARN) warn "${id}: ${description} [${value}]"; (( WARN_COUNT++ )) ;;
+        SKIP) skip "${id}: ${description}";             (( SKIP_COUNT++ )) ;;
+    esac
+}
+
+# =============================================================================
+# Evaluate all AUTO check results
+# =============================================================================
+evaluate_checks() {
+    local val=""
+
+    header "\n=== LOG CONFIGURATION ==="
+
+    val=$(get_result LOG001)
+    [ "$val" -ge "$THRESH_LOGFILSIZ" ] 2>/dev/null \
+        && record LOG001 PASS "$val" "LOGFILSIZ" \
+        || record LOG001 FAIL "$val (expected >=${THRESH_LOGFILSIZ})" "LOGFILSIZ"
+
+    val=$(get_result LOG002)
+    [ "$val" -ge "$THRESH_LOGPRIMARY" ] 2>/dev/null \
+        && record LOG002 PASS "$val" "LOGPRIMARY" \
+        || record LOG002 FAIL "$val (expected >=${THRESH_LOGPRIMARY})" "LOGPRIMARY"
+
+    val=$(get_result LOG003)
+    [ "$val" -ge "$THRESH_LOGSECOND" ] 2>/dev/null \
+        && record LOG003 PASS "$val" "LOGSECOND" \
+        || record LOG003 FAIL "$val (expected >=${THRESH_LOGSECOND})" "LOGSECOND"
+
+    val=$(get_result LOG004)
+    [ "$val" -ge "$THRESH_LOGBUFSZ" ] 2>/dev/null \
+        && record LOG004 PASS "$val" "LOGBUFSZ" \
+        || record LOG004 WARN "$val (recommended >=${THRESH_LOGBUFSZ})" "LOGBUFSZ"
+
+    val=$(get_result LOG005)
+    [ "${val^^}" = "ON" ] \
+        && record LOG005 PASS "$val" "LOGARCHCOMPR1" \
+        || record LOG005 FAIL "$val" "LOGARCHCOMPR1 — enable for archive log space reduction"
+
+    val=$(get_result LOG006)
+    [ "${val^^}" = "CONFIGURED" ] \
+        && record LOG006 PASS "$val" "LOGARCHMETH1" \
+        || record LOG006 FAIL "$val" "LOGARCHMETH1 not configured"
+
+    val=$(get_result LOG007)
+    [ "${val^^}" = "CONFIGURED" ] \
+        && record LOG007 PASS "$val" "LOGARCHMETH2" \
+        || record LOG007 WARN "$val" "LOGARCHMETH2 — dual destination recommended"
+
+    header "\n=== RECOVERY HISTORY AND RETENTION ==="
+
+    val=$(get_result REC001)
+    [ "${val^^}" = "ON" ] \
+        && record REC001 PASS "$val" "AUTO_DEL_REC_OBJ" \
+        || record REC001 FAIL "$val" "AUTO_DEL_REC_OBJ — archive logs accumulating without cleanup"
+
+    val=$(get_result REC002)
+    [ "$val" -ge "$THRESH_REC_HIS_RETENTN" ] 2>/dev/null \
+        && record REC002 PASS "$val days" "REC_HIS_RETENTN" \
+        || record REC002 WARN "$val days (recommended >=${THRESH_REC_HIS_RETENTN})" "REC_HIS_RETENTN"
+
+    val=$(get_result REC003)
+    [ "$val" -ge "$THRESH_NUM_DB_BACKUPS" ] 2>/dev/null \
+        && record REC003 PASS "$val" "NUM_DB_BACKUPS" \
+        || record REC003 WARN "$val (recommended >=${THRESH_NUM_DB_BACKUPS})" "NUM_DB_BACKUPS"
+
+    val=$(get_result REC004)
+    [ "${val^^}" = "PRESENT" ] \
+        && record REC004 PASS "$val" "Full backup within 7 days" \
+        || record REC004 FAIL "$val" "No full backup in last 7 days"
+
+    val=$(get_result REC005)
+    [ "${val^^}" = "NONE" ] \
+        && record REC005 PASS "No failures" "Backup failures in last 7 days" \
+        || record REC005 FAIL "$val" "Backup failures detected in last 7 days"
+
+    header "\n=== HADR HEALTH ==="
+
+    val=$(get_result HADR001)
+    [ "${val^^}" = "PEER" ] \
+        && record HADR001 PASS "$val" "HADR_STATE" \
+        || record HADR001 FAIL "$val" "HADR_STATE — not in peer state"
+
+    val=$(get_result HADR002)
+    [ "${val^^}" = "NEARSYNC" ] \
+        && record HADR002 PASS "$val" "HADR_SYNCMODE" \
+        || record HADR002 WARN "$val (expected NEARSYNC)" "HADR_SYNCMODE"
+
+    val=$(get_result HADR003)
+    [ "${val^^}" = "CONNECTED" ] \
+        && record HADR003 PASS "$val" "HADR_CONNECT_STATUS" \
+        || record HADR003 FAIL "$val" "HADR_CONNECT_STATUS — standby not connected"
+
+    val=$(get_result HADR004)
+    local gap_ok
+    gap_ok=$(awk -v gap="$val" -v thresh="$THRESH_HADR_LOG_GAP_MB" \
+        'BEGIN { print (gap+0 < thresh+0) ? "YES" : "NO" }')
+    [ "$gap_ok" = "YES" ] \
+        && record HADR004 PASS "${val}MB" "HADR_LOG_GAP" \
+        || record HADR004 WARN "${val}MB (threshold: <${THRESH_HADR_LOG_GAP_MB}MB)" "HADR_LOG_GAP"
+
+    val=$(get_result HADR005)
+    [ "${val^^}" = "SET" ] \
+        && record HADR005 PASS "$val" "PEER_WINDOW configured" \
+        || record HADR005 WARN "$val" "PEER_WINDOW not configured — set for REORG safety"
+
+    header "\n=== ARCHIVE LOG STORAGE ==="
+
+    val=$(get_result ARC001)
+    [ "${val^^}" = "S3" ] \
+        && record ARC001 PASS "$val" "LOGARCHMETH1 is S3" \
+        || record ARC001 WARN "$val (recommended: S3)" "LOGARCHMETH1 — not using S3"
+
+    header "\n=== REORG READINESS ==="
+
+    val=$(get_result REO001)
+    local util_ok
+    util_ok=$(awk -v util="$val" -v thresh="$THRESH_LOG_UTIL_PCT" \
+        'BEGIN { print (util+0 < thresh+0) ? "YES" : "NO" }')
+    [ "$util_ok" = "YES" ] \
+        && record REO001 PASS "${val}%" "Log space utilisation" \
+        || record REO001 WARN "${val}% (threshold: <${THRESH_LOG_UTIL_PCT}%)" "Log utilisation high — REORG may exhaust log space"
+
+    val=$(get_result REO002)
+    [ "${val^^}" = "PEER" ] \
+        && record REO002 PASS "$val" "HADR state safe for REORG" \
+        || record REO002 FAIL "$val" "HADR not in PEER — do not run REORG"
+
+    val=$(get_result REO003)
+    [ "$val" -eq 0 ] 2>/dev/null \
+        && record REO003 PASS "0" "Secondary logs allocated (count)" \
+        || record REO003 WARN "$val" "Secondary logs allocated (count) — investigate before heavy maintenance"
+
+    val=$(get_result REO004)
+    if [ "$val" = "0" ]; then
+        record REO004 PASS "0 indexes" "Indexes with CLUSTERRATIO <${THRESH_CLUSTERRATIO}"
+    else
+        record REO004 WARN "${val} index(es)" "Indexes needing REORG (CLUSTERRATIO <${THRESH_CLUSTERRATIO}) — see detail report"
+    fi
+
+    val=$(get_result REO005)
+    if [ "$val" = "0" ]; then
+        record REO005 PASS "0 indexes" "Indexes with excessive B-tree depth (NLEVELS >${THRESH_NLEVELS})"
+    else
+        record REO005 WARN "${val} index(es)" "Indexes with NLEVELS >${THRESH_NLEVELS} — fragmentation concern"
+    fi
+
+    val=$(get_result REO006)
+    if [ "$val" = "0" ]; then
+        record REO006 PASS "0 indexes" "Unused indexes (>${THRESH_INDEX_UNUSED_DAYS} days)"
+    else
+        record REO006 WARN "${val} index(es)" "Unused indexes — review for potential removal"
+    fi
+
+    val=$(get_result REO007)
+    if [ "$val" = "0" ]; then
+        record REO007 PASS "0 tables" "Tables with >${THRESH_TABLE_FREE_PCT}% free pages"
+    else
+        record REO007 WARN "${val} table(s)" "Tables with high free page % — REORG candidates"
+    fi
+
+    header "\n=== INDEX HEALTH ==="
+
+    val=$(get_result IDX001)
+    local ratio_warn
+    ratio_warn=$(awk -v ratio="$val" 'BEGIN { print (ratio+0 > 2.0) ? "YES" : "NO" }' 2>/dev/null || echo "NO")
+    if [ "$val" = "NO_DATA" ] || [ "$val" = "NO_RESULT" ]; then
+        record IDX001 SKIP "$val" "Index to table page ratio (RUNSTATS required or no data)"
+    elif [ "$ratio_warn" = "YES" ]; then
+        record IDX001 WARN "${val}:1 ratio" "Index to table ratio is high — review index necessity"
+    else
+        record IDX001 PASS "${val}:1 ratio" "Index to table page ratio"
+    fi
+
+    val=$(get_result IDX002)
+    [ "$val" = "0" ] \
+        && record IDX002 PASS "0 indexes" "Unused indexes (>${THRESH_INDEX_UNUSED_DAYS} days)" \
+        || record IDX002 WARN "${val} index(es)" "Unused indexes — listed in detail section"
+
+    val=$(get_result IDX003)
+    [ "$val" = "0" ] \
+        && record IDX003 PASS "0 indexes" "Indexes with NLEVELS >${THRESH_NLEVELS}" \
+        || record IDX003 WARN "${val} index(es)" "Deep B-tree indexes — REORG candidates"
+}
+
+# =============================================================================
+# Generate detailed lists for WARN items where useful
+# =============================================================================
+generate_detail_report() {
+    header "\n=== DETAIL LISTINGS ==="
+
+    local detail_clp
+    detail_clp=$(mktemp /tmp/db2_detail_XXXXXX.clp)
+
+    local conn_stmt
+    if [ -n "$DB_USER" ]; then
+        conn_stmt="CONNECT TO ${DB_NAME} USER ${DB_USER} USING ${DB_PASS};"
+    else
+        conn_stmt="CONNECT TO ${DB_NAME};"
+    fi
+
+    cat > "$detail_clp" << ENDDETAIL
+${conn_stmt}
+
+-- Fragmented indexes
+SELECT
+    INDNAME,
+    TABNAME,
+    CLUSTERRATIO,
+    NLEVELS,
+    NLEAF,
+    LASTUSED
+FROM SYSCAT.INDEXES
+WHERE UPPER(TABSCHEMA) = UPPER('${DB_SCHEMA}')
+  AND CLUSTERRATIO IS NOT NULL
+  AND CLUSTERRATIO >= 0
+  AND CLUSTERRATIO < ${THRESH_CLUSTERRATIO}
+  AND UNIQUERULE <> 'P'
+ORDER BY CLUSTERRATIO ASC
+FETCH FIRST 20 ROWS ONLY;
+
+-- Unused indexes
+SELECT
+    INDNAME,
+    TABNAME,
+    LASTUSED,
+    NLEAF
+FROM SYSCAT.INDEXES
+WHERE UPPER(TABSCHEMA) = UPPER('${DB_SCHEMA}')
+  AND LASTUSED <> DATE('0001-01-01')
+  AND LASTUSED < CURRENT DATE - ${THRESH_INDEX_UNUSED_DAYS} DAYS
+ORDER BY LASTUSED ASC
+FETCH FIRST 20 ROWS ONLY;
+
+-- Tables needing REORG
+SELECT
+    TABNAME,
+    NPAGES,
+    FPAGES,
+    DECIMAL((DOUBLE(FPAGES) / DOUBLE(NPAGES)) * 100.0, 5, 2) AS FREE_PCT
+FROM SYSCAT.TABLES
+WHERE UPPER(TABSCHEMA) = UPPER('${DB_SCHEMA}')
+  AND TYPE = 'T'
+  AND NPAGES > 0
+  AND DECIMAL((DOUBLE(FPAGES) / DOUBLE(NPAGES)) * 100.0, 5, 2) > ${THRESH_TABLE_FREE_PCT}
+ORDER BY FREE_PCT DESC
+FETCH FIRST 20 ROWS ONLY;
+
+CONNECT RESET;
+ENDDETAIL
+
+    log "\n--- Fragmented Indexes (CLUSTERRATIO < ${THRESH_CLUSTERRATIO}) ---"
+    db2 -f "$detail_clp" -t 2>>"$REPORT_FILE" >> "$REPORT_FILE" || true
+    db2 -f "$detail_clp" -t 2>>"$REPORT_FILE" | head -60 || true
+
+    rm -f "$detail_clp"
+}
+
+# =============================================================================
+# Print MANUAL checklist items for DBA to action
+# =============================================================================
+print_manual_items() {
+    header "\n=== MANUAL CHECKS — DBA ACTION REQUIRED ==="
+    log "The following items cannot be verified automatically and require DBA review:\n"
+
+    local current_section=""
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^##\ SECTION:\ (.*) ]]; then
+            current_section="${BASH_REMATCH[1]}"
+        fi
+        if [[ "$line" =~ ^\[MANUAL\][[:space:]]+(([A-Z]+[0-9]+))[[:space:]]*\|[[:space:]]*(HIGH|MEDIUM|LOW)[[:space:]]*\|[[:space:]]*(.*)\|[[:space:]]*(.*) ]]; then
+            local check_id="${BASH_REMATCH[2]}"
+            local risk="${BASH_REMATCH[3]}"
+            local description
+            description=$(echo "${BASH_REMATCH[4]}" | sed 's/[[:space:]]*$//')
+            manual "[ ] ${check_id} [${risk}] — ${description}"
+        fi
+    done < "$CHECKLIST_FILE"
+}
+
+# =============================================================================
+# Summary
+# =============================================================================
+print_summary() {
+    local total=$(( PASS_COUNT + FAIL_COUNT + WARN_COUNT + SKIP_COUNT ))
+
+    log "\n${BOLD}================================================================="
+    log " DB2 DBA HEALTH CHECK SUMMARY"
+    log "=================================================================${RESET}"
+    log " Database  : ${DB_NAME}"
+    log " Schema    : ${DB_SCHEMA}"
+    log " Run at    : $(date)"
+    log " Report    : ${REPORT_FILE}"
+    log "-----------------------------------------------------------------"
+    log " ${GREEN}PASS${RESET}  : ${PASS_COUNT} / ${total}"
+    log " ${YELLOW}WARN${RESET}  : ${WARN_COUNT} / ${total}"
+    log " ${RED}FAIL${RESET}  : ${FAIL_COUNT} / ${total}"
+    log " SKIP  : ${SKIP_COUNT} / ${total}"
+    log "================================================================="
+
+    if [ "$FAIL_COUNT" -gt 0 ]; then
+        log "\n${RED}${BOLD}ACTION REQUIRED: ${FAIL_COUNT} critical check(s) failed. Review FAIL items above.${RESET}"
+    fi
+    if [ "$WARN_COUNT" -gt 0 ]; then
+        log "${YELLOW}ATTENTION: ${WARN_COUNT} warning(s) require DBA review.${RESET}"
+    fi
+    if [ "$FAIL_COUNT" -eq 0 ] && [ "$WARN_COUNT" -eq 0 ]; then
+        log "${GREEN}${BOLD}All automated checks passed.${RESET}"
+    fi
+
+    log "\n${CYAN}Review manual checklist items above before any REORG or maintenance activity.${RESET}"
+}
+
+# =============================================================================
+# Main
+# =============================================================================
+main() {
+    {
+    echo "================================================================="
+    echo " DB2 DBA HEALTH CHECKER"
+    echo " Database : ${DB_NAME} | Schema: ${DB_SCHEMA}"
+    echo " Run at   : $(date)"
+    echo " Checklist: ${CHECKLIST_FILE}"
+    echo "================================================================="
+    echo ""
+    } | tee "$REPORT_FILE"
+
+    build_clp
+    run_checks
+    evaluate_checks
+    generate_detail_report
+    print_manual_items
+    print_summary
+}
+
+main
+
