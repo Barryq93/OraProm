@@ -1,34 +1,36 @@
 #!/bin/bash
 # =============================================================================
-# db2_dba_checker.sh
-# DB2 DBA Health Checker — parses db2_dba_checklist.md and runs AUTO checks
+# db2_dba_checker.sh  (SAFE + SLOW + DEBUGGABLE MODE)
 #
-# Key design:
-#   1) Parse the checklist markdown to build the ordered list of AUTO checks:
-#        CHECK_ID -> Risk, Description, Expected, Section
-#   2) Execute ALL DB2 queries in ONE db2 CLI session via a generated CLP file.
-#   3) Parse DB2 output into CHECK_VALUES[CHECK_ID] = value
-#   4) Evaluate each AUTO check using a DBA-defined rule-set PER CHECK_ID,
-#      using the checklist "Expected" field as the threshold/token.
+# Design:
+#   - Parse the checklist markdown for ordering + metadata (AUTO/MANUAL, risk,
+#     description, expected).
+#   - Run each AUTO query individually (each is its own db2 invocation)
+#     using "CONNECT; SELECT; CONNECT RESET; TERMINATE" so every query is
+#     self-contained and debuggable.
+#   - Append only "CHECK_ID|VALUE" lines to a results tmp file for parsing.
+#   - Capture full stdout/stderr for each query into the report for debugging.
 #
-# IMPORTANT — CONNECTION HANDLING:
-#   One db2 -f invocation keeps a single session open. Do NOT split into
-#   multiple db2 invocations with separate connects.
-#
-# Usage:
-#   ./db2_dba_checker.sh -d <DBNAME> -s <SCHEMA> [-c <checklist>] [-o <report>] [-u <user>] [-p <pass>]
+# Notes:
+#   - set -e is enabled; db2 commands are wrapped so the script continues
+#     even if a query returns non-zero (warnings/errors). You want debug output,
+#     not early exit.
+#   - Uses CHAR()/CAST(), not VARCHAR(...) (VARCHAR is a type, not a function).
+#   - Uses documented monitor function columns:
+#       * MON_GET_HADR: HADR_STATE, HADR_SYNCMODE, HADR_CONNECT_STATUS, HADR_LOG_GAP, PEER_WINDOW
+#       * MON_GET_TRANSACTION_LOG: TOTAL_LOG_USED, TOTAL_LOG_AVAILABLE, SEC_LOGS_ALLOCATED
 # =============================================================================
 
 set -euo pipefail
 umask 077
 
 # =============================================================================
-# CONFIG (defaults; most thresholds now come from checklist "Expected" column)
+# Defaults (used for the queries where checklist "Expected" is non-numeric token)
 # =============================================================================
-THRESH_INDEX_UNUSED_DAYS_DEFAULT=90
-THRESH_CLUSTERRATIO_DEFAULT=80
-THRESH_NLEVELS_DEFAULT=4
-THRESH_TABLE_FREE_PCT_DEFAULT=20
+DEFAULT_CLUSTERRATIO=80
+DEFAULT_NLEVELS=4
+DEFAULT_UNUSED_DAYS=90
+DEFAULT_FREE_PCT=20
 
 # =============================================================================
 # Colours — disabled automatically if not a terminal
@@ -50,8 +52,8 @@ DB_PASS=""
 CHECKLIST_FILE="db2_dba_checklist.md"
 REPORT_FILE="db2_health_$(date +%Y%m%d_%H%M%S).txt"
 
-TMP_CLP=""
-TMP_OUT=""
+TMP_RESULTS=""
+TMP_PARSED=""
 
 PASS_COUNT=0
 WARN_COUNT=0
@@ -61,22 +63,22 @@ SKIP_COUNT=0
 # Parsed from checklist:
 declare -A CHECK_TYPE      # ID -> AUTO|MANUAL
 declare -A CHECK_RISK      # ID -> HIGH|MEDIUM|LOW
-declare -A CHECK_DESC      # ID -> description (from md)
-declare -A CHECK_EXPECTED  # ID -> expected token/value (from md)
-declare -A CHECK_SECTION   # ID -> section name (from md)
-AUTO_ORDER=()              # ordered list of AUTO check IDs, as they appear in md
-MANUAL_ORDER=()            # ordered list of MANUAL check IDs
+declare -A CHECK_DESC      # ID -> description
+declare -A CHECK_EXPECTED  # ID -> expected
+declare -A CHECK_SECTION   # ID -> section name
+AUTO_ORDER=()
+MANUAL_ORDER=()
 
-# Populated from db2 output:
-declare -A CHECK_VALUES    # ID -> actual value (string)
-declare -A CHECK_RESULTS   # ID -> PASS|WARN|FAIL|SKIP
+# Runtime values/results
+declare -A CHECK_VALUE     # ID -> actual
+declare -A CHECK_RESULT    # ID -> PASS|WARN|FAIL|SKIP
 
 # =============================================================================
 # Cleanup
 # =============================================================================
 cleanup() {
-  [ -n "${TMP_CLP:-}" ] && rm -f "$TMP_CLP"
-  [ -n "${TMP_OUT:-}" ] && rm -f "$TMP_OUT"
+  [ -n "${TMP_RESULTS:-}" ] && rm -f "$TMP_RESULTS"
+  [ -n "${TMP_PARSED:-}" ] && rm -f "$TMP_PARSED"
 }
 trap cleanup EXIT
 
@@ -137,8 +139,8 @@ skip()     { log "  [SKIP] $*"; }
 
 record() {
   local id="$1" status="$2" value="$3" msg="$4"
-  CHECK_RESULTS["$id"]="$status"
-  CHECK_VALUES["$id"]="$value"
+  CHECK_RESULT["$id"]="$status"
+  CHECK_VALUE["$id"]="$value"
   case "$status" in
     PASS) pass "${id}: ${msg} [${value}]"; ((PASS_COUNT++)) ;;
     WARN) warn "${id}: ${msg} [${value}]"; ((WARN_COUNT++)) ;;
@@ -156,14 +158,11 @@ parse_checklist() {
   MANUAL_ORDER=()
 
   while IFS= read -r line; do
-    # Section headers like: ## SECTION: Log Configuration
     if [[ "$line" =~ ^##[[:space:]]SECTION:[[:space:]](.+)$ ]]; then
       current_section="${BASH_REMATCH[1]}"
       continue
     fi
 
-    # Checklist lines:
-    # [AUTO]   LOG001 | HIGH   | desc ... | expected
     if [[ "$line" =~ ^\[(AUTO|MANUAL)\][[:space:]]+([A-Z]+[0-9]+)[[:space:]]*\|[[:space:]]*(HIGH|MEDIUM|LOW)[[:space:]]*\|[[:space:]]*(.*)[[:space:]]*\|[[:space:]]*(.*)[[:space:]]*$ ]]; then
       local type="${BASH_REMATCH[1]}"
       local id="${BASH_REMATCH[2]}"
@@ -171,7 +170,6 @@ parse_checklist() {
       local desc="${BASH_REMATCH[4]}"
       local expected="${BASH_REMATCH[5]}"
 
-      # Trim desc/expected
       desc="$(echo "$desc" | sed 's/[[:space:]]*$//')"
       expected="$(echo "$expected" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
 
@@ -189,281 +187,184 @@ parse_checklist() {
     fi
   done < "$CHECKLIST_FILE"
 
-  if [ "${#AUTO_ORDER[@]}" -eq 0 ]; then
-    echo "ERROR: No [AUTO] checks found in checklist: $CHECKLIST_FILE" >&2
+  [ "${#AUTO_ORDER[@]}" -eq 0 ] && { echo "ERROR: No [AUTO] checks found in checklist." >&2; exit 1; }
+}
+
+# =============================================================================
+# DB2 preflight (fail fast if db2 env or connectivity is broken)
+# =============================================================================
+preflight_db2() {
+  header "Preflight: DB2 environment and connectivity"
+
+  if ! command -v db2 >/dev/null 2>&1; then
+    fail "db2 not found in PATH. Source the DB2 instance profile before running."
     exit 1
   fi
-}
 
-# =============================================================================
-# Helpers to parse expected values from checklist
-# =============================================================================
-expected_number() {
-  # Extract first numeric token from expected string (supports 65536, <500MB, <60%, etc.)
-  local s="${1:-}"
-  echo "$s" | grep -Eo '[0-9]+([.][0-9]+)?' | head -1 || true
-}
+  {
+    echo "---- db2level ----"
+    db2level || true
+    echo "---- DB2INSTANCE ----"
+    echo "DB2INSTANCE=${DB2INSTANCE:-<unset>}"
+  } >>"$REPORT_FILE" 2>&1
 
-expected_is_lt() {
-  local s="${1:-}"
-  [[ "$s" =~ ^\< ]]
-}
-
-# =============================================================================
-# Build CLP file (single db2 session)
-# =============================================================================
-build_clp() {
-  TMP_CLP=$(mktemp /tmp/db2_checker_XXXXXX.clp)
-  TMP_OUT=$(mktemp /tmp/db2_checker_XXXXXX.out)
-
-  local connect_stmt
+  local stmt
   if [ -n "$DB_USER" ]; then
-    connect_stmt="CONNECT TO ${DB_NAME} USER ${DB_USER} USING ${DB_PASS};"
+    stmt="CONNECT TO ${DB_NAME} USER ${DB_USER} USING ${DB_PASS}; VALUES 1; CONNECT RESET; TERMINATE;"
   else
-    connect_stmt="CONNECT TO ${DB_NAME};"
+    stmt="CONNECT TO ${DB_NAME}; VALUES 1; CONNECT RESET; TERMINATE;"
   fi
 
-  cat > "$TMP_CLP" <<ENDCLP
-${connect_stmt}
-
--- LOG001: LOGFILSIZ
-SELECT 'LOG001|' || RTRIM(CHAR(MAX(VALUE)))
-FROM SYSIBMADM.DBCFG
-WHERE UPPER(NAME) = 'LOGFILSIZ';
-
--- LOG002: LOGPRIMARY
-SELECT 'LOG002|' || RTRIM(CHAR(MAX(VALUE)))
-FROM SYSIBMADM.DBCFG
-WHERE UPPER(NAME) = 'LOGPRIMARY';
-
--- LOG003: LOGSECOND
-SELECT 'LOG003|' || RTRIM(CHAR(MAX(VALUE)))
-FROM SYSIBMADM.DBCFG
-WHERE UPPER(NAME) = 'LOGSECOND';
-
--- LOG004: LOGBUFSZ
-SELECT 'LOG004|' || RTRIM(CHAR(MAX(VALUE)))
-FROM SYSIBMADM.DBCFG
-WHERE UPPER(NAME) = 'LOGBUFSZ';
-
--- LOG005: LOGARCHCOMPR1
-SELECT 'LOG005|' || COALESCE(UPPER(RTRIM(CHAR(MAX(VALUE)))), 'NULL')
-FROM SYSIBMADM.DBCFG
-WHERE UPPER(NAME) = 'LOGARCHCOMPR1';
-
--- LOG006: LOGARCHMETH1 configured
-SELECT 'LOG006|' ||
-       CASE
-         WHEN MAX(VALUE) IS NULL OR RTRIM(CHAR(MAX(VALUE))) = '' OR UPPER(RTRIM(CHAR(MAX(VALUE)))) = 'LOGRETAIN'
-           THEN 'NOT_CONFIGURED'
-         ELSE 'CONFIGURED'
-       END
-FROM SYSIBMADM.DBCFG
-WHERE UPPER(NAME) = 'LOGARCHMETH1';
-
--- LOG007: LOGARCHMETH2 configured
-SELECT 'LOG007|' ||
-       CASE
-         WHEN MAX(VALUE) IS NULL OR RTRIM(CHAR(MAX(VALUE))) = '' OR UPPER(RTRIM(CHAR(MAX(VALUE)))) = 'OFF'
-           THEN 'NOT_CONFIGURED'
-         ELSE 'CONFIGURED'
-       END
-FROM SYSIBMADM.DBCFG
-WHERE UPPER(NAME) = 'LOGARCHMETH2';
-
--- REC001: AUTO_DEL_REC_OBJ
-SELECT 'REC001|' || COALESCE(UPPER(RTRIM(CHAR(MAX(VALUE)))), 'NULL')
-FROM SYSIBMADM.DBCFG
-WHERE UPPER(NAME) = 'AUTO_DEL_REC_OBJ';
-
--- REC002: REC_HIS_RETENTN
-SELECT 'REC002|' || RTRIM(CHAR(MAX(VALUE)))
-FROM SYSIBMADM.DBCFG
-WHERE UPPER(NAME) = 'REC_HIS_RETENTN';
-
--- REC003: NUM_DB_BACKUPS
-SELECT 'REC003|' || RTRIM(CHAR(MAX(VALUE)))
-FROM SYSIBMADM.DBCFG
-WHERE UPPER(NAME) = 'NUM_DB_BACKUPS';
-
--- REC004: Full backup in last 7 days
-SELECT 'REC004|' ||
-       CASE WHEN COUNT(*) > 0 THEN 'PRESENT' ELSE 'ABSENT' END
-FROM SYSIBMADM.DB_HISTORY
-WHERE OPERATION = 'B'
-  AND OPERATIONTYPE = 'F'
-  AND TIMESTAMP_FORMAT(START_TIME, 'YYYYMMDDHH24MISS') >= (CURRENT TIMESTAMP - 7 DAYS);
-
--- REC005: No backup failures in last 7 days
-SELECT 'REC005|' ||
-       CASE
-         WHEN COUNT(*) = 0 THEN 'NONE'
-         ELSE RTRIM(CHAR(COUNT(*))) || '_FAILURES'
-       END
-FROM SYSIBMADM.DB_HISTORY
-WHERE OPERATION = 'B'
-  AND SQLCODE < 0
-  AND TIMESTAMP_FORMAT(START_TIME, 'YYYYMMDDHH24MISS') >= (CURRENT TIMESTAMP - 7 DAYS);
-
--- HADR001: HADR_STATE
-SELECT 'HADR001|' || UPPER(RTRIM(CHAR(HADR_STATE)))
-FROM TABLE(SYSPROC.MON_GET_HADR(NULL))
-FETCH FIRST 1 ROW ONLY;
-
--- HADR002: HADR_SYNCMODE
-SELECT 'HADR002|' || UPPER(RTRIM(CHAR(HADR_SYNCMODE)))
-FROM TABLE(SYSPROC.MON_GET_HADR(NULL))
-FETCH FIRST 1 ROW ONLY;
-
--- HADR003: HADR_CONNECT_STATUS
-SELECT 'HADR003|' || UPPER(RTRIM(CHAR(HADR_CONNECT_STATUS)))
-FROM TABLE(SYSPROC.MON_GET_HADR(NULL))
-FETCH FIRST 1 ROW ONLY;
-
--- HADR004: HADR_LOG_GAP in MB
-SELECT 'HADR004|' || RTRIM(CHAR(DECIMAL(HADR_LOG_GAP / 1048576.0, 10, 2)))
-FROM TABLE(SYSPROC.MON_GET_HADR(NULL))
-FETCH FIRST 1 ROW ONLY;
-
--- HADR005: peer window configured (check PEER_WINDOW > 0)
-SELECT 'HADR005|' ||
-       CASE WHEN PEER_WINDOW IS NOT NULL AND PEER_WINDOW > 0 THEN 'SET' ELSE 'NOT_SET' END
-FROM TABLE(SYSPROC.MON_GET_HADR(NULL))
-FETCH FIRST 1 ROW ONLY;
-
--- ARC001: LOGARCHMETH1 is S3
-SELECT 'ARC001|' ||
-       CASE
-         WHEN UPPER(RTRIM(CHAR(MAX(VALUE)))) LIKE 'S3%' THEN 'S3'
-         ELSE COALESCE(RTRIM(CHAR(MAX(VALUE))), 'NULL')
-       END
-FROM SYSIBMADM.DBCFG
-WHERE UPPER(NAME) = 'LOGARCHMETH1';
-
--- REO001: Current log space utilisation % (computed)
-SELECT 'REO001|' ||
-       RTRIM(CHAR(
-         DECIMAL(
-           (DOUBLE(TOTAL_LOG_USED) * 100.0) /
-           NULLIF(DOUBLE(TOTAL_LOG_USED + TOTAL_LOG_AVAILABLE), 0),
-           5, 1
-         )
-       ))
-FROM TABLE(SYSPROC.MON_GET_TRANSACTION_LOG(-1))
-FETCH FIRST 1 ROW ONLY;
-
--- REO002: HADR_STATE again for reorg section
-SELECT 'REO002|' || UPPER(RTRIM(CHAR(HADR_STATE)))
-FROM TABLE(SYSPROC.MON_GET_HADR(NULL))
-FETCH FIRST 1 ROW ONLY;
-
--- REO003: Secondary logs allocated (count)
-SELECT 'REO003|' || RTRIM(CHAR(SEC_LOGS_ALLOCATED))
-FROM TABLE(SYSPROC.MON_GET_TRANSACTION_LOG(-1))
-FETCH FIRST 1 ROW ONLY;
-
--- REO004: Indexes with CLUSTERRATIO below threshold (use default 80; evaluation uses checklist expected if present)
-SELECT 'REO004|' || RTRIM(CHAR(COUNT(*)))
-FROM SYSCAT.INDEXES
-WHERE UPPER(TABSCHEMA) = UPPER('${DB_SCHEMA}')
-  AND CLUSTERRATIO IS NOT NULL
-  AND CLUSTERRATIO >= 0
-  AND CLUSTERRATIO < ${THRESH_CLUSTERRATIO_DEFAULT}
-  AND UNIQUERULE <> 'P';
-
--- REO005: Indexes with NLEVELS above threshold (default 4; evaluation uses checklist expected if present)
-SELECT 'REO005|' || RTRIM(CHAR(COUNT(*)))
-FROM SYSCAT.INDEXES
-WHERE UPPER(TABSCHEMA) = UPPER('${DB_SCHEMA}')
-  AND NLEVELS IS NOT NULL
-  AND NLEVELS >= 0
-  AND NLEVELS > ${THRESH_NLEVELS_DEFAULT};
-
--- REO006: Indexes unused for N days (default 90; evaluation uses checklist expected if present)
-SELECT 'REO006|' || RTRIM(CHAR(COUNT(*)))
-FROM SYSCAT.INDEXES
-WHERE UPPER(TABSCHEMA) = UPPER('${DB_SCHEMA}')
-  AND LASTUSED <> DATE('0001-01-01')
-  AND LASTUSED < CURRENT DATE - ${THRESH_INDEX_UNUSED_DAYS_DEFAULT} DAYS;
-
--- REO007: Tables with >% free pages (your fixed double math)
-SELECT 'REO007|' || RTRIM(CHAR(COUNT(*)))
-FROM SYSCAT.TABLES
-WHERE UPPER(TABSCHEMA) = UPPER('${DB_SCHEMA}')
-  AND TYPE = 'T'
-  AND NPAGES > 0
-  AND DECIMAL((DOUBLE(FPAGES) / DOUBLE(NPAGES)) * 100, 5, 2) > ${THRESH_TABLE_FREE_PCT_DEFAULT};
-
--- IDX001: Index to table page ratio (db-wide for schema)
-SELECT 'IDX001|' ||
-       CASE
-         WHEN SUM(I.NLEAF) > 0 AND SUM(T.NPAGES) > 0
-           THEN RTRIM(CHAR(DECIMAL(DOUBLE(SUM(I.NLEAF)) / DOUBLE(SUM(T.NPAGES)), 6, 2)))
-         ELSE 'NO_DATA'
-       END
-FROM SYSCAT.TABLES T
-JOIN SYSCAT.INDEXES I
-  ON T.TABNAME = I.TABNAME
- AND T.TABSCHEMA = I.TABSCHEMA
-WHERE UPPER(T.TABSCHEMA) = UPPER('${DB_SCHEMA}')
-  AND T.TYPE = 'T';
-
--- IDX002: Unused indexes count (same logic as REO006 default)
-SELECT 'IDX002|' || RTRIM(CHAR(COUNT(*)))
-FROM SYSCAT.INDEXES
-WHERE UPPER(TABSCHEMA) = UPPER('${DB_SCHEMA}')
-  AND LASTUSED <> DATE('0001-01-01')
-  AND LASTUSED < CURRENT DATE - ${THRESH_INDEX_UNUSED_DAYS_DEFAULT} DAYS;
-
--- IDX003: Deep indexes count (same logic as REO005 default)
-SELECT 'IDX003|' || RTRIM(CHAR(COUNT(*)))
-FROM SYSCAT.INDEXES
-WHERE UPPER(TABSCHEMA) = UPPER('${DB_SCHEMA}')
-  AND NLEVELS IS NOT NULL
-  AND NLEVELS >= 0
-  AND NLEVELS > ${THRESH_NLEVELS_DEFAULT};
-
-CONNECT RESET;
-ENDCLP
-ENDCLP
+  local out
+  out="$(db2 -x "$stmt" 2>>"$REPORT_FILE" || true)"
+  if ! echo "$out" | awk '{gsub(/^[ \t]+|[ \t]+$/, "", $0); print}' | grep -qx "1"; then
+    fail "Connectivity preflight failed (CONNECT/VALUES 1). Check report for DB2 errors."
+    {
+      echo "---- Preflight stdout ----"
+      echo "$out"
+    } >>"$REPORT_FILE"
+    exit 1
+  fi
+  pass "DB2 CLI can connect to ${DB_NAME}"
 }
 
 # =============================================================================
-# Run DB2 checks and parse output into CHECK_VALUES
+# Build per-check SQL (each returns exactly one row: ID|VALUE)
 # =============================================================================
-run_checks() {
-  header "Running DB2 automated checks against ${DB_NAME} (schema: ${DB_SCHEMA})..."
-  echo ""
+sql_for_check() {
+  local id="$1"
+  case "$id" in
+    LOG001) echo "SELECT 'LOG001|' || RTRIM(CHAR(MAX(VALUE))) FROM SYSIBMADM.DBCFG WHERE UPPER(NAME)='LOGFILSIZ';" ;;
+    LOG002) echo "SELECT 'LOG002|' || RTRIM(CHAR(MAX(VALUE))) FROM SYSIBMADM.DBCFG WHERE UPPER(NAME)='LOGPRIMARY';" ;;
+    LOG003) echo "SELECT 'LOG003|' || RTRIM(CHAR(MAX(VALUE))) FROM SYSIBMADM.DBCFG WHERE UPPER(NAME)='LOGSECOND';" ;;
+    LOG004) echo "SELECT 'LOG004|' || RTRIM(CHAR(MAX(VALUE))) FROM SYSIBMADM.DBCFG WHERE UPPER(NAME)='LOGBUFSZ';" ;;
+    LOG005) echo "SELECT 'LOG005|' || COALESCE(UPPER(RTRIM(CHAR(MAX(VALUE)))), 'NULL') FROM SYSIBMADM.DBCFG WHERE UPPER(NAME)='LOGARCHCOMPR1';" ;;
+    LOG006) echo "SELECT 'LOG006|' || CASE WHEN MAX(VALUE) IS NULL OR RTRIM(CHAR(MAX(VALUE)))='' OR UPPER(RTRIM(CHAR(MAX(VALUE))))='LOGRETAIN' THEN 'NOT_CONFIGURED' ELSE 'CONFIGURED' END FROM SYSIBMADM.DBCFG WHERE UPPER(NAME)='LOGARCHMETH1';" ;;
+    LOG007) echo "SELECT 'LOG007|' || CASE WHEN MAX(VALUE) IS NULL OR RTRIM(CHAR(MAX(VALUE)))='' OR UPPER(RTRIM(CHAR(MAX(VALUE))))='OFF' THEN 'NOT_CONFIGURED' ELSE 'CONFIGURED' END FROM SYSIBMADM.DBCFG WHERE UPPER(NAME)='LOGARCHMETH2';" ;;
 
-  : > "$TMP_OUT"
+    REC001) echo "SELECT 'REC001|' || COALESCE(UPPER(RTRIM(CHAR(MAX(VALUE)))), 'NULL') FROM SYSIBMADM.DBCFG WHERE UPPER(NAME)='AUTO_DEL_REC_OBJ';" ;;
+    REC002) echo "SELECT 'REC002|' || RTRIM(CHAR(MAX(VALUE))) FROM SYSIBMADM.DBCFG WHERE UPPER(NAME)='REC_HIS_RETENTN';" ;;
+    REC003) echo "SELECT 'REC003|' || RTRIM(CHAR(MAX(VALUE))) FROM SYSIBMADM.DBCFG WHERE UPPER(NAME)='NUM_DB_BACKUPS';" ;;
+    REC004) echo "SELECT 'REC004|' || CASE WHEN COUNT(*)>0 THEN 'PRESENT' ELSE 'ABSENT' END FROM SYSIBMADM.DB_HISTORY WHERE OPERATION='B' AND OPERATIONTYPE='F' AND TIMESTAMP_FORMAT(START_TIME,'YYYYMMDDHH24MISS') >= (CURRENT TIMESTAMP - 7 DAYS);" ;;
+    REC005) echo "SELECT 'REC005|' || CASE WHEN COUNT(*)=0 THEN 'NONE' ELSE RTRIM(CHAR(COUNT(*))) || '_FAILURES' END FROM SYSIBMADM.DB_HISTORY WHERE OPERATION='B' AND SQLCODE < 0 AND TIMESTAMP_FORMAT(START_TIME,'YYYYMMDDHH24MISS') >= (CURRENT TIMESTAMP - 7 DAYS);" ;;
 
-  # IMPORTANT: trim first, then match. (db2 pads output)
-  db2 -x -t -v -f "$TMP_CLP" 2>>"$REPORT_FILE" | \
-    awk '
-      {
-        gsub(/^[ \t]+|[ \t]+$/, "", $0);
-        if ($0 ~ /^[A-Z][A-Z0-9]*[0-9]\|/) print $0;
-      }
-    ' > "$TMP_OUT" || true
+    HADR001) echo "SELECT 'HADR001|' || UPPER(RTRIM(CHAR(HADR_STATE))) FROM TABLE(SYSPROC.MON_GET_HADR(NULL)) FETCH FIRST 1 ROW ONLY;" ;;
+    HADR002) echo "SELECT 'HADR002|' || UPPER(RTRIM(CHAR(HADR_SYNCMODE))) FROM TABLE(SYSPROC.MON_GET_HADR(NULL)) FETCH FIRST 1 ROW ONLY;" ;;
+    HADR003) echo "SELECT 'HADR003|' || UPPER(RTRIM(CHAR(HADR_CONNECT_STATUS))) FROM TABLE(SYSPROC.MON_GET_HADR(NULL)) FETCH FIRST 1 ROW ONLY;" ;;
+    HADR004) echo "SELECT 'HADR004|' || RTRIM(CHAR(DECIMAL(HADR_LOG_GAP/1048576.0,10,2))) FROM TABLE(SYSPROC.MON_GET_HADR(NULL)) FETCH FIRST 1 ROW ONLY;" ;;
+    HADR005) echo "SELECT 'HADR005|' || CASE WHEN PEER_WINDOW IS NOT NULL AND PEER_WINDOW > 0 THEN 'SET' ELSE 'NOT_SET' END FROM TABLE(SYSPROC.MON_GET_HADR(NULL)) FETCH FIRST 1 ROW ONLY;" ;;
 
-  # Load values into associative array
+    ARC001) echo "SELECT 'ARC001|' || CASE WHEN UPPER(RTRIM(CHAR(MAX(VALUE)))) LIKE 'S3%' THEN 'S3' ELSE COALESCE(RTRIM(CHAR(MAX(VALUE))), 'NULL') END FROM SYSIBMADM.DBCFG WHERE UPPER(NAME)='LOGARCHMETH1';" ;;
+
+    REO001) echo "SELECT 'REO001|' || RTRIM(CHAR(DECIMAL((DOUBLE(TOTAL_LOG_USED)*100.0)/NULLIF(DOUBLE(TOTAL_LOG_USED+TOTAL_LOG_AVAILABLE),0),5,1))) FROM TABLE(SYSPROC.MON_GET_TRANSACTION_LOG(-1)) FETCH FIRST 1 ROW ONLY;" ;;
+    REO002) echo "SELECT 'REO002|' || UPPER(RTRIM(CHAR(HADR_STATE))) FROM TABLE(SYSPROC.MON_GET_HADR(NULL)) FETCH FIRST 1 ROW ONLY;" ;;
+    REO003) echo "SELECT 'REO003|' || RTRIM(CHAR(SEC_LOGS_ALLOCATED)) FROM TABLE(SYSPROC.MON_GET_TRANSACTION_LOG(-1)) FETCH FIRST 1 ROW ONLY;" ;;
+    REO004) echo "SELECT 'REO004|' || RTRIM(CHAR(COUNT(*))) FROM SYSCAT.INDEXES WHERE UPPER(TABSCHEMA)=UPPER('${DB_SCHEMA}') AND CLUSTERRATIO IS NOT NULL AND CLUSTERRATIO>=0 AND CLUSTERRATIO<${DEFAULT_CLUSTERRATIO} AND UNIQUERULE<>'P';" ;;
+    REO005) echo "SELECT 'REO005|' || RTRIM(CHAR(COUNT(*))) FROM SYSCAT.INDEXES WHERE UPPER(TABSCHEMA)=UPPER('${DB_SCHEMA}') AND NLEVELS IS NOT NULL AND NLEVELS>=0 AND NLEVELS>${DEFAULT_NLEVELS};" ;;
+    REO006) echo "SELECT 'REO006|' || RTRIM(CHAR(COUNT(*))) FROM SYSCAT.INDEXES WHERE UPPER(TABSCHEMA)=UPPER('${DB_SCHEMA}') AND LASTUSED<>DATE('0001-01-01') AND LASTUSED < CURRENT DATE - ${DEFAULT_UNUSED_DAYS} DAYS;" ;;
+    REO007) echo "SELECT 'REO007|' || RTRIM(CHAR(COUNT(*))) FROM SYSCAT.TABLES WHERE UPPER(TABSCHEMA)=UPPER('${DB_SCHEMA}') AND TYPE='T' AND NPAGES>0 AND DECIMAL((DOUBLE(FPAGES)/DOUBLE(NPAGES))*100,5,2) > ${DEFAULT_FREE_PCT};" ;;
+
+    IDX001) echo "SELECT 'IDX001|' || CASE WHEN SUM(I.NLEAF)>0 AND SUM(T.NPAGES)>0 THEN RTRIM(CHAR(DECIMAL(DOUBLE(SUM(I.NLEAF))/DOUBLE(SUM(T.NPAGES)),6,2))) ELSE 'NO_DATA' END FROM SYSCAT.TABLES T JOIN SYSCAT.INDEXES I ON T.TABNAME=I.TABNAME AND T.TABSCHEMA=I.TABSCHEMA WHERE UPPER(T.TABSCHEMA)=UPPER('${DB_SCHEMA}') AND T.TYPE='T';" ;;
+    IDX002) echo "SELECT 'IDX002|' || RTRIM(CHAR(COUNT(*))) FROM SYSCAT.INDEXES WHERE UPPER(TABSCHEMA)=UPPER('${DB_SCHEMA}') AND LASTUSED<>DATE('0001-01-01') AND LASTUSED < CURRENT DATE - ${DEFAULT_UNUSED_DAYS} DAYS;" ;;
+    IDX003) echo "SELECT 'IDX003|' || RTRIM(CHAR(COUNT(*))) FROM SYSCAT.INDEXES WHERE UPPER(TABSCHEMA)=UPPER('${DB_SCHEMA}') AND NLEVELS IS NOT NULL AND NLEVELS>=0 AND NLEVELS>${DEFAULT_NLEVELS};" ;;
+
+    *) echo "" ;;
+  esac
+}
+
+# =============================================================================
+# Run one query safely (self-contained connect/reset/terminate each time)
+# =============================================================================
+run_one_query() {
+  local id="$1"
+  local sql="$2"
+
+  local stmt
+  if [ -n "$DB_USER" ]; then
+    stmt="CONNECT TO ${DB_NAME} USER ${DB_USER} USING ${DB_PASS}; ${sql} CONNECT RESET; TERMINATE;"
+  else
+    stmt="CONNECT TO ${DB_NAME}; ${sql} CONNECT RESET; TERMINATE;"
+  fi
+
+  {
+    echo ""
+    echo "==================== ${id} ===================="
+    echo "${sql}"
+    echo "------------------------------------------------"
+  } >>"$REPORT_FILE"
+
+  # Run db2; never let it abort the whole script (debug mode)
+  local out
+  out="$(db2 -x "$stmt" 2>>"$REPORT_FILE" || true)"
+
+  # Append stdout for debug
+  {
+    echo "---- STDOUT (${id}) ----"
+    echo "$out"
+  } >>"$REPORT_FILE"
+
+  # Extract the exact "ID|VALUE" line (trim padding)
+  echo "$out" | awk -v id="$id" '
+    {
+      gsub(/^[ \t]+|[ \t]+$/, "", $0);
+      if ($0 ~ ("^" id "\\|")) print $0;
+    }
+  ' >>"$TMP_RESULTS"
+}
+
+# =============================================================================
+# Run all AUTO queries (slow, safe)
+# =============================================================================
+run_all_queries() {
+  header "Running AUTO checks (SAFE/SLOW/DEBUG mode: one db2 invocation per check)..."
+
+  TMP_RESULTS="$(mktemp /tmp/db2_checker_XXXXXX.results)"
+  TMP_PARSED="$(mktemp /tmp/db2_checker_XXXXXX.parsed)"
+  : >"$TMP_RESULTS"
+
+  local id sql
+  for id in "${AUTO_ORDER[@]}"; do
+    sql="$(sql_for_check "$id")"
+    if [ -z "$sql" ]; then
+      # checklist has an AUTO check we don't have a SQL for
+      echo "${id}|NO_SQL_DEFINED" >>"$TMP_RESULTS"
+      continue
+    fi
+    run_one_query "$id" "$sql"
+  done
+
+  # Normalize results into CHECK_VALUE (first match wins)
+  awk '
+    {
+      gsub(/^[ \t]+|[ \t]+$/, "", $0);
+      if ($0 ~ /^[A-Z][A-Z0-9]*[0-9]\|/) print $0;
+    }
+  ' "$TMP_RESULTS" >"$TMP_PARSED"
+
   while IFS='|' read -r id rest; do
     [ -n "${id:-}" ] || continue
-    # if value itself contains pipes, keep the remainder (rest already is remainder)
-    local value="$rest"
-    value="$(echo "$value" | sed 's/^[ \t]*//;s/[ \t]*$//')"
-    CHECK_VALUES["$id"]="$value"
-  done < "$TMP_OUT"
+    # keep remainder after first pipe; trim
+    rest="$(echo "$rest" | sed 's/^[ \t]*//;s/[ \t]*$//')"
+    # first value wins (avoid duplicates)
+    if [ -z "${CHECK_VALUE[$id]:-}" ]; then
+      CHECK_VALUE["$id"]="$rest"
+    fi
+  done <"$TMP_PARSED"
 }
 
 get_value() {
   local id="$1"
-  echo "${CHECK_VALUES[$id]:-NO_RESULT}"
+  echo "${CHECK_VALUE[$id]:-NO_RESULT}"
 }
 
 # =============================================================================
-# Evaluate each AUTO check by ID using checklist expected value
+# Evaluation rules (mapped to your checklist semantics)
 # =============================================================================
+expected_number() {
+  local s="${1:-}"
+  echo "$s" | grep -Eo '[0-9]+([.][0-9]+)?' | head -1 || true
+}
+
 evaluate_auto_checks() {
   local last_section=""
   local id desc exp val
@@ -473,36 +374,29 @@ evaluate_auto_checks() {
     exp="${CHECK_EXPECTED[$id]}"
     val="$(get_value "$id")"
 
-    # Print section header when it changes
     if [ "${CHECK_SECTION[$id]}" != "$last_section" ]; then
       last_section="${CHECK_SECTION[$id]}"
       header "\n=== ${last_section} ==="
     fi
 
-    # No DB2 output for this ID
-    if [ "$val" = "NO_RESULT" ]; then
-      record "$id" FAIL "$val" "${desc} (no result from DB2 query)"
+    if [ "$val" = "NO_RESULT" ] || [ "$val" = "NO_SQL_DEFINED" ]; then
+      record "$id" FAIL "$val" "$desc"
       continue
     fi
 
     case "$id" in
-      # --------------------------
-      # Log Configuration
-      # --------------------------
       LOG001)
-        # checklist expects exact numeric (65536)
         if [ "$val" -eq "$exp" ] 2>/dev/null; then
           record "$id" PASS "$val" "$desc"
         else
           record "$id" FAIL "$val" "$desc (expected ${exp})"
         fi
         ;;
-      LOG002|LOG003|LOG004)
-        # checklist expected is numeric threshold (>=)
+      LOG002|LOG003|LOG004|REC002|REC003)
         if [ "$val" -ge "$exp" ] 2>/dev/null; then
           record "$id" PASS "$val" "$desc"
         else
-          # LOG004 is MEDIUM so WARN is ok; the checklist risk is MEDIUM but you may still want FAIL
+          # In your md: LOG004/REC002/REC003 are MEDIUM -> WARN
           if [ "${CHECK_RISK[$id]}" = "HIGH" ]; then
             record "$id" FAIL "$val" "$desc (expected >=${exp})"
           else
@@ -510,19 +404,22 @@ evaluate_auto_checks() {
           fi
         fi
         ;;
-      LOG005)
+      LOG005|REC001|REC004|REC005|HADR001|HADR002|HADR003|REO002|ARC001)
         if [ "${val^^}" = "${exp^^}" ]; then
           record "$id" PASS "$val" "$desc"
         else
-          record "$id" FAIL "$val" "$desc (expected ${exp})"
+          # ARC001 is HIGH in md but you may want WARN instead; keeping WARN as earlier intent.
+          if [ "$id" = "ARC001" ]; then
+            record "$id" WARN "$val" "$desc (expected ${exp})"
+          else
+            record "$id" FAIL "$val" "$desc (expected ${exp})"
+          fi
         fi
         ;;
       LOG006|LOG007)
         if [ "${val^^}" = "${exp^^}" ]; then
-          # LOG007 is MEDIUM; still PASS if configured
           record "$id" PASS "$val" "$desc"
         else
-          # LOG006 is HIGH -> FAIL, LOG007 MEDIUM -> WARN
           if [ "${CHECK_RISK[$id]}" = "HIGH" ]; then
             record "$id" FAIL "$val" "$desc (expected ${exp})"
           else
@@ -530,61 +427,14 @@ evaluate_auto_checks() {
           fi
         fi
         ;;
-
-      # --------------------------
-      # Recovery History
-      # --------------------------
-      REC001)
-        if [ "${val^^}" = "${exp^^}" ]; then
-          record "$id" PASS "$val" "$desc"
-        else
-          record "$id" FAIL "$val" "$desc (expected ${exp})"
-        fi
-        ;;
-      REC002|REC003)
-        # expected numeric threshold (>=)
-        if [ "$val" -ge "$exp" ] 2>/dev/null; then
-          record "$id" PASS "$val" "$desc"
-        else
-          record "$id" WARN "$val" "$desc (expected >=${exp})"
-        fi
-        ;;
-      REC004)
-        if [ "${val^^}" = "${exp^^}" ]; then
-          record "$id" PASS "$val" "$desc"
-        else
-          record "$id" FAIL "$val" "$desc (expected ${exp})"
-        fi
-        ;;
-      REC005)
-        # expected NONE
-        if [ "${val^^}" = "${exp^^}" ]; then
-          record "$id" PASS "$val" "$desc"
-        else
-          record "$id" FAIL "$val" "$desc (expected ${exp})"
-        fi
-        ;;
-
-      # --------------------------
-      # HADR Health
-      # --------------------------
-      HADR001|HADR002|HADR003)
-        if [ "${val^^}" = "${exp^^}" ]; then
-          record "$id" PASS "$val" "$desc"
-        else
-          # HADR002 is HIGH in your md; if you ever accept SYNC/ASYNC as WARN, change here
-          record "$id" FAIL "$val" "$desc (expected ${exp})"
-        fi
-        ;;
       HADR004)
-        # expected like "<500MB"
-        local thresh
-        thresh="$(expected_number "$exp")"
-        if [ -z "$thresh" ]; then
-          record "$id" WARN "$val" "$desc (could not parse expected threshold: ${exp})"
+        # expected like <500MB
+        local t; t="$(expected_number "$exp")"
+        if [ -z "$t" ]; then
+          record "$id" WARN "$val" "$desc (could not parse expected ${exp})"
         else
           local ok
-          ok=$(awk -v gap="$val" -v t="$thresh" 'BEGIN{print (gap+0 < t+0) ? "YES":"NO"}')
+          ok=$(awk -v gap="$val" -v thr="$t" 'BEGIN{print (gap+0 < thr+0)?"YES":"NO"}')
           if [ "$ok" = "YES" ]; then
             record "$id" PASS "${val}MB" "$desc (expected ${exp})"
           else
@@ -593,38 +443,21 @@ evaluate_auto_checks() {
         fi
         ;;
       HADR005)
-        # Checklist says HADR_PEER_WINDOW_END is set, expected SET.
-        # Our DB2-side check uses PEER_WINDOW > 0 -> SET/NOT_SET.
-        if [ "${val^^}" = "${exp^^}" ]; then
+        # checklist expected SET, we return SET/NOT_SET
+        if [ "${val^^}" = "SET" ]; then
           record "$id" PASS "$val" "$desc (validated via PEER_WINDOW>0)"
         else
-          record "$id" WARN "$val" "$desc (expected ${exp}; validated via PEER_WINDOW>0)"
+          record "$id" WARN "$val" "$desc (peer window not configured)"
         fi
         ;;
-
-      # --------------------------
-      # Archive Log Storage
-      # --------------------------
-      ARC001)
-        if [ "${val^^}" = "${exp^^}" ]; then
-          record "$id" PASS "$val" "$desc"
-        else
-          record "$id" WARN "$val" "$desc (expected ${exp})"
-        fi
-        ;;
-
-      # --------------------------
-      # REORG Readiness
-      # --------------------------
       REO001)
-        # expected like "<60%"
-        local thresh
-        thresh="$(expected_number "$exp")"
-        if [ -z "$thresh" ]; then
-          record "$id" WARN "$val" "$desc (could not parse expected threshold: ${exp})"
+        # expected like <60%
+        local t; t="$(expected_number "$exp")"
+        if [ -z "$t" ]; then
+          record "$id" WARN "$val" "$desc (could not parse expected ${exp})"
         else
           local ok
-          ok=$(awk -v util="$val" -v t="$thresh" 'BEGIN{print (util+0 < t+0) ? "YES":"NO"}')
+          ok=$(awk -v util="$val" -v thr="$t" 'BEGIN{print (util+0 < thr+0)?"YES":"NO"}')
           if [ "$ok" = "YES" ]; then
             record "$id" PASS "${val}%" "$desc (expected ${exp})"
           else
@@ -632,186 +465,43 @@ evaluate_auto_checks() {
           fi
         fi
         ;;
-      REO002)
-        if [ "${val^^}" = "${exp^^}" ]; then
-          record "$id" PASS "$val" "$desc"
-        else
-          record "$id" FAIL "$val" "$desc (expected ${exp})"
-        fi
-        ;;
       REO003)
-        # expected 0
         if [ "$val" -eq 0 ] 2>/dev/null; then
           record "$id" PASS "$val" "$desc"
         else
           record "$id" WARN "$val" "$desc (expected 0)"
         fi
         ;;
-      REO004|REO005|REO006|REO007)
-        # Expected is "IDENTIFIED" in md; interpret as:
-        #   PASS if 0 (nothing to do), WARN if >0 (candidates exist)
+      REO004|REO005|REO006|REO007|IDX002|IDX003)
+        # counts: 0 => PASS, >0 => WARN (candidates exist / items listed)
         if [ "$val" -eq 0 ] 2>/dev/null; then
-          record "$id" PASS "0" "$desc (no candidates)"
+          record "$id" PASS "0" "$desc (none)"
         else
-          record "$id" WARN "$val" "$desc (candidates identified)"
+          record "$id" WARN "$val" "$desc"
         fi
         ;;
-
-      # --------------------------
-      # Index Health
-      # --------------------------
       IDX001)
-        # Expected is REVIEWED. We produce a ratio number or NO_DATA.
-        # Interpretation:
-        #   - NO_DATA -> SKIP (needs RUNSTATS / no objects)
-        #   - ratio > 2.0 -> WARN, else PASS
         if [ "${val^^}" = "NO_DATA" ]; then
-          record "$id" SKIP "$val" "$desc (no stats or no data)"
+          record "$id" SKIP "$val" "$desc (no stats / no data)"
         else
           local warn_ratio
-          warn_ratio=$(awk -v r="$val" 'BEGIN{print (r+0 > 2.0) ? "YES":"NO"}' 2>/dev/null || echo "NO")
+          warn_ratio=$(awk -v r="$val" 'BEGIN{print (r+0 > 2.0)?"YES":"NO"}' 2>/dev/null || echo "NO")
           if [ "$warn_ratio" = "YES" ]; then
-            record "$id" WARN "${val}:1" "$desc (high index/table page ratio)"
+            record "$id" WARN "${val}:1" "$desc (high ratio)"
           else
             record "$id" PASS "${val}:1" "$desc"
           fi
         fi
         ;;
-      IDX002|IDX003)
-        # Expected LISTED. Interpret same as "candidates exist":
-        #   - 0 -> PASS
-        #   - >0 -> WARN (means there are items to list/review)
-        if [ "$val" -eq 0 ] 2>/dev/null; then
-          record "$id" PASS "0" "$desc (none)"
-        else
-          record "$id" WARN "$val" "$desc (items to list/review)"
-        fi
-        ;;
-
       *)
-        # Unknown ID (present in md but not in SQL set)
-        record "$id" SKIP "$val" "$desc (no evaluator rule for this check ID)"
+        record "$id" SKIP "$val" "$desc (no evaluator rule)"
         ;;
     esac
   done
 }
 
 # =============================================================================
-# Detail listings (only if candidates exist)
-# =============================================================================
-generate_detail_report() {
-  header "\n=== DETAIL LISTINGS ==="
-
-  local detail_clp
-  detail_clp=$(mktemp /tmp/db2_detail_XXXXXX.clp)
-
-  local conn_stmt
-  if [ -n "$DB_USER" ]; then
-    conn_stmt="CONNECT TO ${DB_NAME} USER ${DB_USER} USING ${DB_PASS};"
-  else
-    conn_stmt="CONNECT TO ${DB_NAME};"
-  fi
-
-  # Pull defaults from checklist where obvious:
-  # - CLUSTERRATIO threshold: use number from description/expected if present, else default 80
-  # - NLEVELS threshold: default 4
-  # - Unused days: default 90
-  # - Free pct: default 20
-  local cr="${THRESH_CLUSTERRATIO_DEFAULT}"
-  local nl="${THRESH_NLEVELS_DEFAULT}"
-  local ud="${THRESH_INDEX_UNUSED_DAYS_DEFAULT}"
-  local fp="${THRESH_TABLE_FREE_PCT_DEFAULT}"
-
-  # Try to derive from checklist expected/desc where possible
-  if [ -n "${CHECK_DESC[REO004]:-}" ]; then
-    local n; n="$(echo "${CHECK_DESC[REO004]}" | grep -Eo '([0-9]{2,3})' | head -1 || true)"
-    [ -n "$n" ] && cr="$n"
-  fi
-  if [ -n "${CHECK_DESC[REO005]:-}" ]; then
-    local n; n="$(echo "${CHECK_DESC[REO005]}" | grep -Eo '([0-9]{1,2})' | head -1 || true)"
-    [ -n "$n" ] && nl="$n"
-  fi
-  if [ -n "${CHECK_DESC[REO006]:-}" ]; then
-    local n; n="$(echo "${CHECK_DESC[REO006]}" | grep -Eo '([0-9]{2,4})' | head -1 || true)"
-    [ -n "$n" ] && ud="$n"
-  fi
-  if [ -n "${CHECK_DESC[REO007]:-}" ]; then
-    local n; n="$(echo "${CHECK_DESC[REO007]}" | grep -Eo '([0-9]{1,3})%' | head -1 | tr -d '%' || true)"
-    [ -n "$n" ] && fp="$n"
-  fi
-
-  cat > "$detail_clp" <<ENDDETAIL
-${conn_stmt}
-
--- Fragmented indexes (CLUSTERRATIO < ${cr})
-SELECT
-  INDNAME,
-  TABNAME,
-  CLUSTERRATIO,
-  NLEVELS,
-  NLEAF,
-  LASTUSED
-FROM SYSCAT.INDEXES
-WHERE UPPER(TABSCHEMA) = UPPER('${DB_SCHEMA}')
-  AND CLUSTERRATIO IS NOT NULL
-  AND CLUSTERRATIO >= 0
-  AND CLUSTERRATIO < ${cr}
-  AND UNIQUERULE <> 'P'
-ORDER BY CLUSTERRATIO ASC
-FETCH FIRST 50 ROWS ONLY;
-
--- Deep indexes (NLEVELS > ${nl})
-SELECT
-  INDNAME,
-  TABNAME,
-  NLEVELS,
-  NLEAF,
-  LASTUSED
-FROM SYSCAT.INDEXES
-WHERE UPPER(TABSCHEMA) = UPPER('${DB_SCHEMA}')
-  AND NLEVELS IS NOT NULL
-  AND NLEVELS >= 0
-  AND NLEVELS > ${nl}
-ORDER BY NLEVELS DESC
-FETCH FIRST 50 ROWS ONLY;
-
--- Unused indexes (> ${ud} days)
-SELECT
-  INDNAME,
-  TABNAME,
-  LASTUSED,
-  NLEAF
-FROM SYSCAT.INDEXES
-WHERE UPPER(TABSCHEMA) = UPPER('${DB_SCHEMA}')
-  AND LASTUSED <> DATE('0001-01-01')
-  AND LASTUSED < CURRENT DATE - ${ud} DAYS
-ORDER BY LASTUSED ASC
-FETCH FIRST 50 ROWS ONLY;
-
--- Tables needing REORG (> ${fp}% free pages)
-SELECT
-  TABNAME,
-  NPAGES,
-  FPAGES,
-  DECIMAL((DOUBLE(FPAGES) / DOUBLE(NPAGES)) * 100, 5, 2) AS FREE_PCT
-FROM SYSCAT.TABLES
-WHERE UPPER(TABSCHEMA) = UPPER('${DB_SCHEMA}')
-  AND TYPE = 'T'
-  AND NPAGES > 0
-  AND DECIMAL((DOUBLE(FPAGES) / DOUBLE(NPAGES)) * 100, 5, 2) > ${fp}
-ORDER BY FREE_PCT DESC
-FETCH FIRST 50 ROWS ONLY;
-
-CONNECT RESET;
-ENDDETAIL
-
-  log "\n--- Index & Table Candidate Listings (Top 50 each) ---"
-  db2 -t -v -f "$detail_clp" 2>>"$REPORT_FILE" >>"$REPORT_FILE" || true
-  rm -f "$detail_clp"
-}
-
-# =============================================================================
-# Print MANUAL items (from parsed md)
+# Manual items
 # =============================================================================
 print_manual_items() {
   header "\n=== MANUAL CHECKS — DBA ACTION REQUIRED ==="
@@ -863,7 +553,7 @@ print_summary() {
 main() {
   {
     echo "================================================================="
-    echo " DB2 DBA HEALTH CHECKER"
+    echo " DB2 DBA HEALTH CHECKER (SAFE/SLOW/DEBUG MODE)"
     echo " Database : ${DB_NAME} | Schema: ${DB_SCHEMA}"
     echo " Run at   : $(date)"
     echo " Checklist: ${CHECKLIST_FILE}"
@@ -872,10 +562,9 @@ main() {
   } | tee "$REPORT_FILE"
 
   parse_checklist
-  build_clp
-  run_checks
+  preflight_db2
+  run_all_queries
   evaluate_auto_checks
-  generate_detail_report
   print_manual_items
   print_summary
 }
