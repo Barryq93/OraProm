@@ -23,6 +23,18 @@ I have attached **tta.png** — a rough hand-drawn or draft diagram showing the 
 
 If the draft diagram is incomplete or ambiguous in any area, use your TTA architectural knowledge to fill the gaps correctly rather than leaving components out.
 
+## Reference Document
+
+I have also attached **Draft HLD.doc** — a Word document containing the draft heading structure for the High Level Design document we are producing. Use this as a structural guide for your response. Specifically:
+
+- Your response should map to and populate the headings present in the draft HLD — treat them as the required sections this answer must address
+- Do not invent new top-level sections that conflict with the HLD structure; if you identify a gap in the HLD headings that the content requires, flag it explicitly rather than silently adding it
+- Match the heading hierarchy shown in the document (H1, H2, H3 levels) so the output can be dropped directly into the HLD with minimal restructuring
+- Where a heading in the draft is empty or has only placeholder text, treat it as a prompt to generate the full content for that section
+- The tone, depth, and formality of the content should be appropriate for an HLD in a regulated financial institution — precise, evidence-based, and suitable for review by both technical architects and security/governance stakeholders
+
+If any heading in Draft HLD.doc is ambiguous in scope, state your interpretation before proceeding with that section.
+
 ## Context
 
 I am the lead architect for a **Tungsten TotalAgility hybrid deployment** at AIB, a regulated Irish financial institution. The deployment model is:
@@ -73,4 +85,4 @@ Explain clearly and in detail how the Integration Server interacts with the TTA 
 
 10. **Architecture diagram** — produce a full topology diagram of the deployment described in the Context section, in the style shown in tta.png. Show all four IS nodes, their worker group associations, their LAN-side dependencies (CM8, DB2, Exchange, file server), their outbound connections to the SaaS tenant, and the internal components of the SaaS tenant that they interact with.
 
-Structure the answer with clear headings and numbered steps where appropriate. Be technically accurate and concise. Avoid marketing language. Where behaviour is version-specific or licence-tier-specific, flag it explicitly.
+Structure the response to align with the heading structure in **Draft HLD.doc**. Use that document's hierarchy as the skeleton and populate each section with the content it requires. Flag any gaps or ambiguities in the HLD headings before proceeding. Be technically accurate and concise. Avoid marketing language. Where behaviour is version-specific or licence-tier-specific, flag it explicitly.
