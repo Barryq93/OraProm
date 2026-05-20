@@ -35,6 +35,17 @@ I have also attached **Draft HLD.doc** — a Word document containing the draft 
 
 If any heading in Draft HLD.doc is ambiguous in scope, state your interpretation before proceeding with that section.
 
+## Scripting and Testing Commands
+
+All scripting examples, test commands, connectivity checks, and diagnostic snippets must be written in **PowerShell**. This is a Windows Server environment throughout — no bash, no shell, no Linux CLI equivalents. Specifically:
+
+- Use `Invoke-WebRequest` or `Invoke-RestMethod` for HTTP/API testing, not curl or wget
+- Use PowerShell service cmdlets (`Get-Service`, `Start-Service`, etc.) for Windows service checks, not sc.exe or bash equivalents
+- Use `Test-NetConnection` for connectivity and port testing, not telnet or netcat
+- Use PowerShell for any file system, event log, or registry checks relevant to IS configuration or diagnostics
+- Where a command has a direct PowerShell equivalent of a common Linux tool, always use the PowerShell version
+- Code blocks should specify `powershell` as the language identifier
+
 ## Context
 
 I am the lead architect for a **Tungsten TotalAgility hybrid deployment** at AIB, a regulated Irish financial institution. The deployment model is:
