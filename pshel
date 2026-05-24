@@ -1,12 +1,44 @@
-Resume context is in tta-hld-context.md. 
+Context:
+We have an IBM Db2 11.5.9 LUW database running HADR with one existing principal standby in NEARSYNC + ACR (Peer state). Reads on Standby is not available. We want to add a temporary second standby node, bring it to Peer state, detach it from HADR, and create a reusable offline "golden" backup for repeated testing — without impacting the primary or the existing standby at any point.
 
-Generate the content for HLD section **[number from Section Index]**: [heading name]
+Goal:
+Provide the complete step-by-step command sequence to:
+1. Update hadr_target_list on the Primary and existing Standby 1 to include the new Standby 2 node
+2. Take an online backup from the Primary
+3. Restore it on Standby 2 (leaving it in rollforward pending)
+4. Configure HADR parameters on Standby 2 (using SUPERASYNC sync mode, as required for auxiliary standbys)
+5. Start HADR on Standby 2 and bring it to Peer state
+6. Stop HADR on Standby 2
+7. Roll forward Standby 2 to end of logs and stop, making it a standalone database
+8. Clear all HADR config parameters on Standby 2
+9. Take a full offline backup of Standby 2 as a reusable golden backup
+10. Revert hadr_target_list on Primary and Standby 1 back to single-entry
 
-Specific guidance for this section:
-- [Any specific points or sub-topics to cover]
-- [Diagram needed: yes/no — if yes, reference tta.png style]
-- [PowerShell examples needed: yes/no — if yes, state what they should demonstrate]
-- [Audience note if relevant, e.g. this section is for security review board]
+For each command, specify:
+- Which node it runs on (Primary, Standby 1, or Standby 2)
+- Whether a DB/instance restart is required
 
-When complete, mark section [number] as `[x]` in the Section Index and show the updated index so I can see overall progress.
-Generate this section only. Stop at the section boundary and wait for the next request.
+Constraints:
+- No downtime on Primary or Standby 1 at any point
+- Standby 2 is temporary — it will be dropped and restored from the golden backup for each test run
+- The golden backup must restore as a fully standalone database with no HADR config and no rollforward required
+- Archive logs are stored on a shared NAS accessible to all nodes
+
+The golden backup will be reused across multiple independent test scenarios, including:
+1. Offline and online REORG testing — to measure duration and assess maintenance window requirements
+2. Db2 version upgrade testing — restoring the golden backup on a fresh Db2 12 instance to validate
+   upgrade procedures, compatibility, and post-upgrade behaviour
+3. OS upgrade testing — restoring the golden backup on a RHEL 9 host to validate that the database
+   operates correctly on the new OS before committing to a production upgrade path
+
+Placeholders to substitute with actual values:
+- <DB> = database name
+- <PRIMARY_HOST> = primary hostname
+- <PRIMARY_SVC> = primary HADR service port
+- <PRIMARY_INST> = primary instance name
+- <STANDBY1_HOST> = existing standby hostname
+- <STANDBY1_SVC> = existing standby HADR service port
+- <STANDBY2_HOST> = new temporary standby hostname
+- <STANDBY2_SVC> = new temporary standby HADR service port
+- <NAS_BACKUP_PATH> = NAS path for backups
+- <NAS_ARCHIVE_PATH> = NAS path for archive logs
