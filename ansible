@@ -5,19 +5,20 @@ Key requirements:
 · Use a reusable role structure (roles/<name>/tasks/main.yml, defaults, templates, files, etc.).
 · Inventory‑specific variables go in group_vars next to the inventory file.
 · All tasks must be idempotent and declarative.
+· Important: Many environments enforce a Group Policy that blocks files downloaded from the internet. After deploying any executable, script, or extracted archive, always unblock the files and their paths so they can run. This must be part of the deployment logic – not a manual step.
 
 I need to deploy the following three things, and I’d like you to walk me through the exact role tasks, directory layout, and variables for each:
 
-1. Grafana Alloy – download the .exe zip from GitHub, extract it, place a config file from a Jinja2 template, install it as a Windows service, and start it.
-2. An MSI‑based application (like Tungsten Total Agility) – the .msi is a static file in the role’s files/, but the response/config file is a Jinja2 template because it changes per environment. Install it silently with win_package and make it idempotent using the product code.
-3. A PowerShell monitoring script that lives in a Bitbucket repo. I want it copied to the target server and run hourly via a scheduled task that lives inside a custom folder in Task Scheduler (e.g. Monitoring\Hourly Health Check).
+1. Grafana Alloy – download the .exe zip from GitHub, extract it, place a config file from a Jinja2 template, install it as a Windows service, and start it. Ensure the extracted binary and the folder are unblocked after extraction.
+2. An MSI‑based application (like Tungsten Total Agility) – the .msi is a static file in the role’s files/, but the response/config file is a Jinja2 template because it changes per environment. Install it silently with win_package and make it idempotent using the product code. Ensure any copied files (MSI, config) are unblocked before the installer runs.
+3. A PowerShell monitoring script that lives in a Bitbucket repo. I want it copied to the target server and run hourly via a scheduled task that lives inside a custom folder in Task Scheduler (e.g. Monitoring\Hourly Health Check). Unblock the script file after it lands on disk so PowerShell can execute it even with the policy active.
 
 For each, please:
 
 · Show the role directory structure.
 · Provide the default variables.
 · Write the tasks/main.yml (and any other necessary files like a Jinja2 template or handler).
-· Explain how idempotency works.
+· Explain how idempotency works, including how unblocking is handled idempotently.
 · Note how different teams/environments would override variables.
 
 Assume basic WinRM connectivity is already configured. Focus only on the playbook/role design and module usage.
