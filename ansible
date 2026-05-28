@@ -1,0 +1,23 @@
+I’m building an Ansible project to manage Windows servers. I want to do everything with Ansible’s built‑in modules – no custom PowerShell or Python scripting.
+
+Key requirements:
+
+· Use a reusable role structure (roles/<name>/tasks/main.yml, defaults, templates, files, etc.).
+· Inventory‑specific variables go in group_vars next to the inventory file.
+· All tasks must be idempotent and declarative.
+
+I need to deploy the following three things, and I’d like you to walk me through the exact role tasks, directory layout, and variables for each:
+
+1. Grafana Alloy – download the .exe zip from GitHub, extract it, place a config file from a Jinja2 template, install it as a Windows service, and start it.
+2. An MSI‑based application (like Tungsten Total Agility) – the .msi is a static file in the role’s files/, but the response/config file is a Jinja2 template because it changes per environment. Install it silently with win_package and make it idempotent using the product code.
+3. A PowerShell monitoring script that lives in a Bitbucket repo. I want it copied to the target server and run hourly via a scheduled task that lives inside a custom folder in Task Scheduler (e.g. Monitoring\Hourly Health Check).
+
+For each, please:
+
+· Show the role directory structure.
+· Provide the default variables.
+· Write the tasks/main.yml (and any other necessary files like a Jinja2 template or handler).
+· Explain how idempotency works.
+· Note how different teams/environments would override variables.
+
+Assume basic WinRM connectivity is already configured. Focus only on the playbook/role design and module usage.
