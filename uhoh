@@ -1,0 +1,130 @@
+TECH LEAD IMPLEMENTATION BRIEF
+==============================
+
+Feature: Conditional Dropdown for Document Classification
+Component: ICN Custom Plugin using Operaton DMN
+
+
+FOR THE BUSINESS ANALYST
+-------------------------
+
+What We're Building:
+A rule-driven dropdown in IBM Content Navigator where selecting a "Document 
+Group" automatically determines what options appear in the "Document Type" 
+dropdown.
+
+What You Need to Document:
+
+1. Decision Table Matrix
+   Create a spreadsheet with these columns:
+   - Document Group (input column)
+   - Document Types (output column, comma-separated list)
+
+   Example:
+   | Document Group | Document Types                           |
+   | Legal          | Contract, NDA, Court Filing, POA         |
+   | Financial      | Invoice, Receipt, Tax Form, Bank Stmt    |
+   | HR             | Offer Letter, Review, I-9, W-4           |
+
+2. Rules Maintenance Process
+   - Who owns the rules? (likely business operations)
+   - How often do they change? (dictates cache refresh schedule)
+   - What's the approval process for rule changes?
+   - Who updates the database table? (SQL script, admin UI, etc.)
+
+3. Edge Cases
+   - What happens when a Document Group has no types?
+   - What's the default/fallback if rules fail to load?
+   - Does "All" or "None" need to be an option?
+
+Deliverable: Completed decision table matrix + process document for rule 
+maintenance.
+
+---------------------------------------------------------------
+
+FOR THE DEVELOPER
+------------------
+
+Stack: Java 8+, Operaton DMN Engine, WebSphere DynaCache, ICN Plugin Framework
+
+Step 1: Add Operaton Dependency
+Add to pom.xml:
+<dependency>
+    <groupId>org.operaton.bpm</groupId>
+    <artifactId>operaton-engine-dmn</artifactId>
+    <version>7.22.0</version>
+</dependency>
+
+Step 2: Create Database Table
+Run this SQL in the ICN database:
+CREATE TABLE dmn_rules (
+    decision_key VARCHAR(100) PRIMARY KEY,
+    dmn_xml CLOB NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+Step 3: Insert the DMN Rule
+Insert the DMN XML provided separately into the dmn_rules table with 
+decision_key = 'docTypeDecision'. This is the rule definition that maps 
+document groups to their available types.
+
+Step 4: Create DocumentTypeService.java
+One service class responsible for:
+- Loading DMN XML from the database
+- Parsing it using Operaton's DmnEngine
+- Caching the parsed decision object in WebSphere DynaCache
+- Exposing a single method: getDocumentTypes(String documentGroup) 
+  that evaluates the DMN and returns List<String>
+
+Step 5: Coordinate with WebSphere Team
+Before implementing the cache layer, we need the WebSphere team to:
+- Confirm the cache instance name we should use (proposed: 
+  "dmn/docTypeDecision")
+- Advise on appropriate cache timeout (we're proposing 24 hours)
+- Confirm how our application should access CacheManager (JNDI lookup 
+  vs injected resource)
+- Discuss the cache invalidation approach for the scheduled 6pm refresh
+- Clarify whether we need a new dynacache.xml entry or can reuse an 
+  existing configuration
+
+This conversation needs to happen early. The DynaCache integration is 
+the critical path. Do not assume defaults.
+
+Step 6: Implement Cache Refresh
+- Primary: rely on DynaCache's timeout setting
+- Secondary: add a scheduled method that invalidates cache daily at 6pm
+- First request after cache expiry loads fresh DMN from database
+
+Step 7: Wire Into the Plugin
+In your Plugin class init():
+- Instantiate DocumentTypeService
+- Expose a public method getDocumentTypes(String group) that delegates 
+  to the service
+
+Step 8: Connect to the Frontend (if needed)
+- If custom dialog: minimal Dojo code that calls the plugin service 
+  when the group dropdown changes
+- If extending existing ICN dialog: use a PluginResponseFilter to 
+  inject options server-side, no frontend changes needed
+
+Step 9: Testing Requirements
+- Verify each document group returns correct types
+- Confirm parsed DMN is cached, not reloaded from DB on each call
+- Insert a new rule in DB, trigger cache refresh, verify it takes effect
+- Pass unknown document group, verify graceful handling
+- Test across multiple nodes if clustered (distributed cache behavior)
+
+Files You'll Create:
+- DocumentTypeService.java (DMN engine wrapper)
+- MyPlugin.java (modified to include the service)
+- dynacache.xml or equivalent (coordinated with WebSphere team)
+- pom.xml (updated with Operaton dependency)
+
+Key Documentation to Read:
+- Operaton DMN Engine API (focus on DmnEngineConfiguration and 
+  DmnDecisionTableResult)
+- WebSphere DynaCache / DistributedMap API
+- ICN Plugin development guide (Plugin lifecycle and response filters)
+
+DMN XML provided separately. Raise questions early. Cache integration 
+is the highest risk item. Let's discuss approach before coding begins.
