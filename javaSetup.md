@@ -12,24 +12,24 @@ All tooling lives under `C:\products` with the following layout:
 
 ```
 C:\products\
-â”œâ”€â”€ binaries\                   # Downloaded installers and ZIPs (keep for re-install)
-â”‚   â”œâ”€â”€ eclipse\
-â”‚   â”œâ”€â”€ jdk\
-â”‚   â”œâ”€â”€ maven\
-â”‚   â”œâ”€â”€ liberty\
-â”‚   â”œâ”€â”€ nodejs\
-â”‚   â””â”€â”€ git\
-â”œâ”€â”€ eclipse\                    # Eclipse IDE installation
-â”œâ”€â”€ jdk\                        # Java Development Kit
-â”‚   â””â”€â”€ temurin-8\
-â”œâ”€â”€ maven\                      # Apache Maven
-â”œâ”€â”€ liberty\                    # Open Liberty runtime (local dev server)
-â”‚   â””â”€â”€ wlp\
-â”œâ”€â”€ nodejs\                     # Node.js runtime
-â”œâ”€â”€ git\                        # Git installation
-â””â”€â”€ workspace\                  # Eclipse workspace root
-    â”œâ”€â”€ icn-plugins\            # ICN plugin Maven projects
-    â””â”€â”€ eds-services\           # EDS WAR Maven projects
++-- binaries\                   # Downloaded installers and ZIPs (keep for re-install)
+|   +-- eclipse\
+|   +-- jdk\
+|   +-- maven\
+|   +-- liberty\
+|   +-- nodejs\
+|   `-- git\
++-- eclipse\                    # Eclipse IDE installation
++-- jdk\                        # Java Development Kit
+|   `-- temurin-8\
++-- maven\                      # Apache Maven
++-- liberty\                    # Open Liberty runtime (local dev server)
+|   `-- wlp\
++-- nodejs\                     # Node.js runtime
++-- git\                        # Git installation
+`-- workspace\                  # Eclipse workspace root
+    +-- icn-plugins\            # ICN plugin Maven projects
+    `-- eds-services\           # EDS WAR Maven projects
 ```
 
 > **Convention:** `C:\products\binaries\<tool>\` holds the original ZIP or installer so the environment can be rebuilt without re-downloading.
@@ -39,7 +39,7 @@ C:\products\
 ## 1. Java Development Kit (JDK)
 
 ### Download
-- **Distribution:** Eclipse Temurin (OpenJDK) â€” free, no Oracle licence required
+- **Distribution:** Eclipse Temurin (OpenJDK) - free, no Oracle licence required
 - **Version:** JDK 8 (align with your ICN server version; add JDK 17 as a secondary if required)
 - **Download URL:** https://adoptium.net/temurin/releases/?version=8
 - **Save installer to:** `C:\products\binaries\jdk\`
@@ -108,7 +108,7 @@ After installing, reference these in `pom.xml` as:
 </dependency>
 ```
 
-> Use `<scope>provided</scope>` â€” these JARs are supplied at runtime by the ICN server and must **not** be bundled into the output JAR/WAR.
+> Use `<scope>provided</scope>` - these JARs are supplied at runtime by the ICN server and must **not** be bundled into the output JAR/WAR.
 
 ### Verify
 ```cmd
@@ -153,12 +153,12 @@ C:/products/jdk/temurin-8/bin/javaw.exe
 Set the Eclipse workspace to `C:\products\workspace` on first launch.
 
 ### Install IBM WebSphere Developer Tools
-1. In Eclipse: **Help â†’ Eclipse Marketplace**
+1. In Eclipse: **Help  Eclipse Marketplace**
 2. Search: `IBM Liberty Developer Tools`
 3. Install **IBM WebSphere Application Server Liberty Developer Tools**
 4. Restart Eclipse when prompted
 
-This adds Liberty server management directly into the Eclipse Servers view â€” start, stop, publish, and debug the local Liberty server without leaving the IDE.
+This adds Liberty server management directly into the Eclipse Servers view - start, stop, publish, and debug the local Liberty server without leaving the IDE.
 
 ### Install IBM ICN Eclipse Plugin JARs
 These JARs add ICN-specific project wizards and facets to Eclipse.
@@ -169,10 +169,10 @@ These JARs add ICN-specific project wizards and facets to Eclipse.
    C:\products\eclipse\dropins\
    ```
 3. Restart Eclipse
-4. Verify by checking **File â†’ New â†’ Project** â€” you should see an **IBM Content Navigator** category
+4. Verify by checking **File  New  Project** - you should see an **IBM Content Navigator** category
 
 ### Install GitHub Copilot for Eclipse
-1. **Help â†’ Eclipse Marketplace**
+1. **Help  Eclipse Marketplace**
 2. Search: `GitHub Copilot`
 3. Install and sign in with your GitHub account that has the Copilot licence
 
@@ -183,7 +183,7 @@ These JARs add ICN-specific project wizards and facets to Eclipse.
 Open Liberty is the free, open-source runtime used for local development and hot-reload testing. The developer tests integration by deploying to the shared test server; Open Liberty handles unit-level local testing during active development.
 
 ### Download
-- **Download URL:** https://openliberty.io/downloads/ â€” select **"Kernel"** zip (smallest footprint; features added on demand)
+- **Download URL:** https://openliberty.io/downloads/ - select **"Kernel"** zip (smallest footprint; features added on demand)
 - **Save ZIP to:** `C:\products\binaries\liberty\`
 - **Extract to:** `C:\products\liberty\` (resulting in `C:\products\liberty\wlp\`)
 
@@ -203,12 +203,12 @@ C:\products\liberty\wlp\usr\servers\icndev\
 ### Server Directory Structure
 ```
 C:\products\liberty\wlp\usr\servers\icndev\
-â”œâ”€â”€ server.xml              # Main server configuration
-â”œâ”€â”€ server.env              # Environment variables for this server
-â”œâ”€â”€ jvm.options             # JVM tuning options
-â”œâ”€â”€ apps\                   # Applications deployed here (WAR/JAR)
-â”œâ”€â”€ dropins\                # Auto-deploy directory (drop WAR/JAR here to deploy)
-â””â”€â”€ logs\                   # Server logs (console.log, messages.log)
++-- server.xml              # Main server configuration
++-- server.env              # Environment variables for this server
++-- jvm.options             # JVM tuning options
++-- apps\                   # Applications deployed here (WAR/JAR)
++-- dropins\                # Auto-deploy directory (drop WAR/JAR here to deploy)
+`-- logs\                   # Server logs (console.log, messages.log)
 ```
 
 ### Configure `server.xml`
@@ -232,7 +232,7 @@ Edit `C:\products\liberty\wlp\usr\servers\icndev\server.xml` to enable the featu
                   httpPort="9080"
                   httpsPort="9443" />
 
-    <!-- Application deployment â€” EDS WAR example -->
+    <!-- Application deployment - EDS WAR example -->
     <application id="myEDS"
                  location="my-eds-service.war"
                  name="myEDS"
@@ -258,13 +258,13 @@ JAVA_HOME=C:/products/jdk/temurin-8
 ```cmd
 C:\products\liberty\wlp\bin\server start icndev
 C:\products\liberty\wlp\bin\server stop icndev
-C:\products\liberty\wlp\bin\server run icndev     # Foreground â€” shows console output
+C:\products\liberty\wlp\bin\server run icndev     # Foreground - shows console output
 ```
 
 ### Add Liberty Server to Eclipse
-1. In Eclipse: **Window â†’ Show View â†’ Servers**
-2. Right-click in Servers view â†’ **New â†’ Server**
-3. Select **IBM â†’ WebSphere Application Server Liberty**
+1. In Eclipse: **Window  Show View  Servers**
+2. Right-click in Servers view  **New  Server**
+3. Select **IBM  WebSphere Application Server Liberty**
 4. Point it at `C:\products\liberty\wlp`
 5. Select the `icndev` server instance
 6. The server can now be started, stopped, and used for publishing directly from Eclipse
@@ -276,18 +276,18 @@ C:\products\liberty\wlp\bin\server run icndev     # Foreground â€” shows co
 ### Project Structure (JAR output)
 ```
 icn-my-plugin/
-â”œâ”€â”€ pom.xml
-â””â”€â”€ src/
-    â””â”€â”€ main/
-        â”œâ”€â”€ java/
-        â”‚   â””â”€â”€ com/yourcompany/icn/
-        â”‚       â””â”€â”€ MyPlugin.java
-        â””â”€â”€ resources/
-            â””â”€â”€ com/yourcompany/icn/
-                â””â”€â”€ MyPlugin.properties
++-- pom.xml
+`-- src/
+    `-- main/
+        +-- java/
+        |   `-- com/yourcompany/icn/
+        |       `-- MyPlugin.java
+        `-- resources/
+            `-- com/yourcompany/icn/
+                `-- MyPlugin.properties
 ```
 
-### `pom.xml` Template â€” ICN Plugin
+### `pom.xml` Template - ICN Plugin
 ```xml
 <project>
   <modelVersion>4.0.0</modelVersion>
@@ -297,14 +297,14 @@ icn-my-plugin/
   <packaging>jar</packaging>
 
   <dependencies>
-    <!-- IBM ICN API â€” installed to local repo manually -->
+    <!-- IBM ICN API - installed to local repo manually -->
     <dependency>
       <groupId>com.ibm.ecm</groupId>
       <artifactId>navigatorAPI</artifactId>
       <version>3.0.15</version>
       <scope>provided</scope>
     </dependency>
-    <!-- Java EE Servlet API â€” provided by Liberty -->
+    <!-- Java EE Servlet API - provided by Liberty -->
     <dependency>
       <groupId>jakarta.servlet</groupId>
       <artifactId>jakarta.servlet-api</artifactId>
@@ -345,7 +345,7 @@ Output JAR: `target\icn-my-plugin-1.0.0-SNAPSHOT.jar`
 
 ## 7. Maven Project Setup for EDS (WAR output)
 
-### `pom.xml` Template â€” EDS Service
+### `pom.xml` Template - EDS Service
 ```xml
 <project>
   <modelVersion>4.0.0</modelVersion>
@@ -385,7 +385,7 @@ Output JAR: `target\icn-my-plugin-1.0.0-SNAPSHOT.jar`
         <artifactId>maven-war-plugin</artifactId>
         <version>3.4.0</version>
       </plugin>
-      <!-- Liberty Maven Plugin â€” enables mvn liberty:dev hot-reload -->
+      <!-- Liberty Maven Plugin - enables mvn liberty:dev hot-reload -->
       <plugin>
         <groupId>io.openliberty.tools</groupId>
         <artifactId>liberty-maven-plugin</artifactId>
@@ -417,8 +417,8 @@ Since the shared test server runs a full WebSphere (traditional or Liberty) inst
    ```cmd
    mvn clean package
    ```
-2. Copy `target\icn-my-plugin-1.0.0-SNAPSHOT.jar` to the test server's ICN plugin directory (coordinate path with the server admin â€” typically under the ICN web application's `plugins\` folder or a configured plugin path)
-3. Log into the **ICN Administration Desktop** â†’ **Plug-ins** â†’ select the plugin â†’ click **Reload** (or register it if first time)
+2. Copy `target\icn-my-plugin-1.0.0-SNAPSHOT.jar` to the test server's ICN plugin directory (coordinate path with the server admin - typically under the ICN web application's `plugins\` folder or a configured plugin path)
+3. Log into the **ICN Administration Desktop**  **Plug-ins**  select the plugin  click **Reload** (or register it if first time)
 
 ### EDS WAR Deployment
 1. Build the WAR:
@@ -430,22 +430,22 @@ Since the shared test server runs a full WebSphere (traditional or Liberty) inst
    ```
    GET http://<testserver>:<port>/eds/types
    ```
-4. In the ICN Admin Desktop â†’ **External Data Services** â†’ confirm the registered URL points to the test server endpoint
+4. In the ICN Admin Desktop  **External Data Services**  confirm the registered URL points to the test server endpoint
 
 ### Recommended Workflow
 ```
 Code change in Eclipse
-        â†“
+        
 mvn clean package
-        â†“
+        
 Copy JAR/WAR to test server manually (or via a script)
-        â†“
+        
 Reload plugin / redeploy WAR on test server
-        â†“
+        
 Verify in ICN UI on test server
 ```
 
-> A simple `deploy.bat` script in the project root can automate the copy step â€” parameterise it with the test server share path so the developer runs `deploy.bat` after each build.
+> A simple `deploy.bat` script in the project root can automate the copy step - parameterise it with the test server share path so the developer runs `deploy.bat` after each build.
 
 ---
 
@@ -459,10 +459,10 @@ Used primarily for JavaScript/Dojo frontend work within ICN plugins, and for edi
 - **Install to:** default location (`C:\Users\<username>\AppData\Local\Programs\Microsoft VS Code`) or redirect to `C:\products\vscode\` during installation
 
 ### Extensions to Install
-- **GitHub Copilot** â€” sign in with the licensed GitHub account
-- **Extension Pack for Java** â€” Java language support, Maven integration
-- **XML** (Red Hat) â€” for editing `server.xml`, `pom.xml`, ICN configuration XML
-- **REST Client** â€” for testing EDS endpoints inline without leaving VS Code
+- **GitHub Copilot** - sign in with the licensed GitHub account
+- **Extension Pack for Java** - Java language support, Maven integration
+- **XML** (Red Hat) - for editing `server.xml`, `pom.xml`, ICN configuration XML
+- **REST Client** - for testing EDS endpoints inline without leaving VS Code
 
 ---
 
