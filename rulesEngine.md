@@ -1,201 +1,91 @@
-Act as a senior enterprise solution architect, Java Spring Boot architect, and DMN/rules-engine specialist.
+You are an expert Ansible role author for RHEL-based systems.
 
-You are tasked with producing a complete, enterprise-grade High-Level Design (HLD) and Low-Level Design (LLD) for a Rules Execution Microservice. This microservice will manage and execute business decision rules defined as DMN Decision Tables and will be used by multiple domains (e.g., payments, credit, lending) in a regulated banking environment.
+I need you to design and implement a production-ready Ansible role to deploy and manage the OpenTelemetry Java agent on **RHEL 8** hosts. The role will set up a shared installation that multiple JVM-based applications (WebSphere and standalone Java processes) can use.
 
-## Context and Constraints
+### High-level requirements
 
-The service must:
-- Be built using Java 21 + Spring Boot 3.x.
-- Expose REST APIs (read/execute only).
-- Use Operaton as the DMN/rules execution engine in embedded mode (library dependency, not a standalone server).
-- Store rules in an Oracle 19c+ database.
-- Store DMN/XML rule definitions as CLOB in the database.
-- Support versioning: each logical rule has a rule_id; each rule_id may have multiple versions.
-- Enforce that only one version of a given rule_id can be active at a time.
-- Include is_active flags on rule versions.
-- Cache active rules in a distributed cache.
-- Use Hazelcast as the distributed cache, deployed as an embedded cluster.
-- Run in an active-active deployment with 2 VM nodes, each running a rules-svc.jar with an embedded Hazelcast member.
-- Use Ping Access for authentication and authorisation; the service itself does not issue tokens.
-- Register with Eureka for service discovery.
-- Spring Boot Admin will handle cache clearing via standard Spring Boot actuator endpoints; no custom admin API for cache management is required.
-- Rule inserts/updates/activations are performed manually by DBA via direct SQL; the service does not expose CRUD or activation/deactivation endpoints.
-- Publish rule execution events to a Kafka topic for audit/observability.
-- Integrate with Prometheus, Splunk, and OpenTelemetry (OTel) for metrics, logging, and tracing.
-- Support DMN Decision Tables only (no DRDs, no complex FEEL beyond standard table predicates).
-- Implement idempotency via a client-supplied X-Idempotency-Key header, enforced using Hazelcast.
-- Use Operaton to infer required input variables from the DMN XML and validate the request payload at runtime.
-- Return HTTP 404 when no active rule is found or when no DMN rule row matches.
-- Be designed for multi-domain reuse: payments, credit, lending, etc. Each domain must be able to own its own rules independently while sharing the same runtime platform.
+- Target OS: RHEL 8.
+- Install base directory: `/apps/opentelemetry` (create if missing).
+- Inside this base directory, create:
+  - `/apps/opentelemetry/bin` for agent JARs and versioned binaries.
+  - `/apps/opentelemetry/config` for Java properties configuration files.
+- Implement a **symlink-based “current” layout** to make upgrades and rollbacks easy:
+  - The actual agent JAR should be stored with a versioned filename, e.g.:
+    - `/apps/opentelemetry/bin/opentelemetry-javaagent-<version>.jar`
+  - There should be a stable symlink that does **not** contain the version, e.g.:
+    - `/apps/opentelemetry/bin/opentelemetry-javaagent.jar` → `opentelemetry-javaagent-<version>.jar`
+  - The role must manage this symlink so that switching the “current” version is trivial and safe.
+- Permissions and ownership:
+  - The installation should be readable and executable by multiple application owners on the same host.
+  - Use a sensible owner/group model (for example, `root` owner and a shared group like `otel` or another configurable group).
+  - Ensure the directories and agent JAR are world-readable and executable where appropriate so other users can attach the agent in their JVM args.
+  - Avoid overly permissive settings (no `777`); choose secure defaults while still allowing multiple users to consume the agent and config files.
+- Configuration files:
+  - The role should provide the **Java properties files** for the OpenTelemetry Java agent (`otel.javaagent.configuration-file`).
+  - Properties files should live under `/apps/opentelemetry/config`, for example:
+    - `/apps/opentelemetry/config/<service_name>.properties`
+  - Use Jinja2 templates so that properties can be parameterized per application/service.
+  - The role should not hardcode service names; instead, accept variables to generate one or more properties files per host.
+  - Each JVM process (WebSphere server, standalone JAR, etc.) will point to its own properties file via:
+    - `-Dotel.javaagent.configuration-file=/apps/opentelemetry/config/<service_name>.properties`
+- Integration pattern:
+  - WebSphere JVMs and other Java processes will be configured separately (outside this role) to use:
+    - `-javaagent:/apps/opentelemetry/bin/opentelemetry-javaagent.jar`
+    - `-Dotel.service.name=<service_name>`
+    - `-Dotel.javaagent.configuration-file=/apps/opentelemetry/config/<service_name>.properties`
+  - The role’s responsibility is to ensure the agent JAR and properties files are correctly installed, versioned, and accessible; it does NOT need to modify WebSphere configs directly.
+- Multiple properties files per server:
+  - A single host may run multiple JVMs, each with its own service name and properties file.
+  - The role should support deploying **multiple properties files per server** based on a list of applications/services defined via variables.
+  - Each item could include at least:
+    - `service_name`
+    - `otel_properties` (a dict or map of key/value pairs to render into the properties file template).
+- Idempotence and upgrades:
+  - The role must be fully idempotent.
+  - It should handle:
+    - Initial install.
+    - Upgrading the agent to a new version (drop new JAR, update symlink).
+    - Leaving older versioned JARs in place for rollback if desired (configurable).
+  - Symlink updates must not break running processes; assume JVMs will pick up the new agent only after restart.
+- RHEL 8 best practices:
+  - Use appropriate SELinux contexts if necessary (but only if they are required).
+  - Ensure the role does not conflict with existing system packages or FHS conventions for third-party software.
 
-Required endpoints (read/execute only):
-- GET /v1/rules — return a list of available active rules.
-- GET /v1/rules/{ruleId} — return details for a specific rule, including version history and input/output metadata.
-- POST /v1/rules/{ruleId}/execute — validate request payload and execute the active version of the rule.
+### Ansible role structure
 
-Design principles:
-- Prefer enterprise-grade, maintainable, clear design.
-- Avoid exposing internal rule logic unnecessarily.
-- Assume multiple consuming systems and multiple business domains.
-- Assume audit and traceability are critical.
-- Keep the service loosely coupled from Operaton by introducing an internal RuleEnginePort interface.
-- Make the design suitable for future migration to another rules engine if required.
-- Ensure the design supports multi-domain reuse with clear ownership boundaries.
-- No admin API for rule lifecycle or cache management; cache clearing is handled via Spring Boot Admin actuator endpoints, and rule lifecycle is handled manually by DBA.
+Please generate:
 
-## Required Output
+1. A clear **role structure**:
+   - `tasks/main.yml`
+   - `defaults/main.yml`
+   - `vars/main.yml` (if needed)
+   - `templates/otel-agent.properties.j2` (or similar)
+   - `handlers/main.yml` (if needed)
+   - `README.md` content describing how to use the role.
+2. `defaults/main.yml`:
+   - Provide sensible defaults, such as:
+     - `otel_install_base: /apps/opentelemetry`
+     - `otel_bin_dir: "{{ otel_install_base }}/bin"`
+     - `otel_config_dir: "{{ otel_install_base }}/config"`
+     - `otel_version: "2.28.1"` (example default, overridable).
+     - `otel_owner: root`
+     - `otel_group: otel`
+     - `otel_dir_mode: "0755"`
+     - `otel_file_mode: "0644"`
+     - `otel_services: []` (list of per-service configs).
+3. `tasks/main.yml`:
+   - Create the base, `bin`, and `config` directories with correct ownership and permissions.
+   - Install or copy the versioned agent JAR into `bin`.
+   - Create or update the symlink `opentelemetry-javaagent.jar` pointing to the current versioned JAR.
+   - Render properties files under `config` based on `otel_services` list.
+   - Use `loop` and `with_items` to handle multiple services.
+4. `templates/otel-agent.properties.j2`:
+   - Render each `otel_properties` map into `key=value` lines.
+   - Include comments at the top indicating the service name and that the file is managed by Ansible.
+5. A brief `README.md` text explaining:
+   - How to include the role.
+   - How to set `otel_services` for multiple JVMs.
+   - How to override the agent version and base directory.
+   - How the symlink-based upgrade/rollback works.
 
-Produce a single, comprehensive design document that includes the following sections:
-
-1. Executive Summary
-   - One-paragraph overview of the service, its purpose, and key design choices.
-   - Explicit statement that the service is a reusable, multi-domain platform.
-   - Explicit statement that rule lifecycle is manual (DBA) and cache clearing is via Spring Boot Admin, not custom admin API.
-
-2. Assumptions and Constraints
-   - A table of explicit assumptions (e.g., embedded Operaton, two active-active nodes, Oracle 19c, Ping Access auth, manual DBA rule inserts, Spring Boot Admin + Eureka for cache handling, etc.).
-   - For each assumption, note the impact if it turns out to be wrong.
-
-3. Architecture Overview
-   - Logical architecture with 5 layers: API, Validation, Rule Execution, Engine Abstraction (RuleEnginePort), Infrastructure.
-   - A Mermaid component diagram showing:
-     - Consumers (banking apps)
-     - Ping Access gateway
-     - Node 1 / Node 2 (active-active Spring Boot apps)
-     - Embedded Operaton DMN engine
-     - Hazelcast cluster (rule cache + idempotency cache)
-     - Oracle DB (rules + audit)
-     - Kafka topic
-     - OTel Collector → Prometheus / Splunk
-     - Eureka (service discovery)
-     - Spring Boot Admin (cache clearing via actuator)
-
-4. High-Level Design (HLD)
-   For each sub-section, be explicit and detailed:
-   - Logical architecture description.
-   - Component diagram (Mermaid).
-   - API overview table with method, path, auth role, description (read/execute only endpoints).
-   - Data flow for rule execution (step-by-step).
-   - Caching strategy:
-     - Hazelcast maps: active-rules and idempotency-keys.
-     - TTL, eviction policy, backup-count, active-active consistency.
-     - Guidance on capacity (e.g., 300–800 rules with 500 MB heap, and how it scales).
-     - Cache clearing via Spring Boot Admin actuator endpoints (no custom admin API).
-   - Database strategy:
-     - Two schemas: RULES_OWNER and AUDIT_OWNER.
-     - Function-based unique index to enforce single active version per rule_id.
-     - CLOB storage for DMN XML.
-     - Optional derived metadata columns: DMN_XML_SIZE_BYTES and DMN_HASH.
-     - Optional trigger for size/hash maintenance (describe pros/cons).
-     - Rule lifecycle is manual via DBA SQL; service is read-only for rules.
-   - Security model:
-     - Authentication via Ping Access.
-     - Authorization via JWT roles.
-     - Transport, secrets, input sanitisation, audit, and rule logic confidentiality.
-   - Observability model:
-     - Prometheus metrics (list key metrics).
-     - OpenTelemetry tracing (spans, correlation ID propagation).
-     - Splunk logging (MDC fields, JSON logs).
-     - Kafka audit events schema.
-   - Error handling approach:
-     - HTTP status codes, error codes, and standard error envelope.
-   - Deployment view:
-     - ASCII diagram of the data centre layout: Ping Access, two app nodes, Eureka, Spring Boot Admin, Oracle RAC, Kafka, OTel Collector.
-     - JVM flags and configuration.
-
-5. Low-Level Design (LLD)
-   For each sub-section, be explicit and detailed:
-   - Package structure for a Spring Boot 3.x application.
-   - Controller design:
-     - RulesController only (no AdminController).
-   - Service design:
-     - RuleEnginePort interface (engine abstraction).
-     - OperatonRuleEngine implementation sketch.
-     - RuleService orchestration flow.
-     - IdempotencyService using Hazelcast.
-     - RuleCacheService.
-     - AuditService.
-   - DTOs / request/response models:
-     - RuleExecuteRequest, RuleExecuteResponse, RuleListResponse, RuleDetailResponse, ErrorResponse.
-     - Sample JSON for each.
-   - Oracle table design:
-     - RULE_DEFINITIONS and RULE_VERSIONS tables with full DDL.
-     - RULE_EXECUTION_AUDIT table with full DDL.
-     - Function-based unique index to enforce single active version.
-     - Optional trigger for DMN_XML_SIZE_BYTES and DMN_HASH.
-   - Active-rule uniqueness constraint:
-     - DB-level enforcement via function-based unique index.
-     - Rule lifecycle handled manually by DBA (no activation/deactivation service flow).
-   - Rule execution sequence (Mermaid sequence diagram).
-   - Cache design:
-     - hazelcast.xml configuration.
-     - Explanation of backup-count, eviction, TTL, and active-active consistency.
-     - Cache clearing via Spring Boot Admin actuator (e.g., /actuator/cache/active-rules/clear).
-   - Engine abstraction and DMN execution flow:
-     - How Operaton parses DMN, validates inputs, and executes decision tables.
-     - How the engine abstraction supports future migration.
-   - Input validation approach:
-     - Layer 1: Bean Validation.
-     - Layer 2: DMN-inferred validation via Operaton.
-   - Exception handling:
-     - Custom exceptions and @RestControllerAdvice sketch.
-   - Logging and audit model:
-     - MDC fields.
-     - Kafka event schema.
-     - Audit table usage.
-   - Unit and integration test strategy:
-     - Key unit tests and integration tests.
-     - Use of Testcontainers for Oracle, Hazelcast, and Kafka.
-
-6. Mermaid Diagrams
-   Include complete, valid Mermaid diagrams for:
-   - Component architecture (graph TB).
-   - Rule execution sequence (sequenceDiagram).
-   - Database entity relationship (erDiagram).
-
-7. API Examples with Sample JSON
-   - Example request and response for:
-     - GET /v1/rules
-     - GET /v1/rules/{ruleId}
-     - POST /v1/rules/{ruleId}/execute
-   - Include sample JSON payloads and responses, including error responses.
-
-8. Risks, Trade-offs, and Recommendations
-   - A table with:
-     - Risk description.
-     - Severity (Low/Medium/High).
-     - Recommendation.
-   - Include at least risks for: embedded Operaton, Hazelcast split-brain, CLOB performance, Kafka unavailability, PII in audit CLOB, DMN engine migration, manual rule lifecycle (DBA).
-
-9. Open Questions to Confirm Before Implementation
-   - A list of critical open questions, including:
-     - PII masking policy.
-     - Idempotency key TTL.
-     - Kafka topic configuration.
-     - Oracle CLOB storage and tablespace quotas.
-     - Ping Access JWT claim structure for roles.
-     - Spring Boot Admin actuator endpoint path for cache clearing.
-     - Hazelcast network configuration.
-     - OTel Collector endpoint and backend.
-     - DMN validation gate before DBA deploy.
-     - Service registration and health check strategy with Eureka.
-
-10. Multi-Domain Design Considerations
-    - Explicitly address how the service supports multiple domains (payments, credit, lending, etc.).
-    - Describe:
-      - domain_code on rules and versions.
-      - Domain-scoped endpoints (e.g., /v1/domains/{domain}/rules) if needed.
-      - Domain ownership boundaries and authorization.
-      - Domain-specific metrics and dashboards.
-      - How rule namespaces are isolated per domain but the runtime platform is shared.
-
-## Format Requirements
-
-- Use clear, enterprise-grade language.
-- Use Markdown with headings, tables, code blocks, and Mermaid diagrams.
-- All code snippets must be syntactically valid Java or SQL.
-- All Mermaid diagrams must be valid and render correctly.
-- Keep the document self-contained and implementation-ready.
-- Do not ask clarifying questions; make reasonable assumptions where needed and document them clearly.
-
-Produce the full design document now.
+Make sure all YAML examples are syntactically correct, and follow Ansible best practices for RHEL 8. Use clear variable names and add brief inline comments where it improves readability.
