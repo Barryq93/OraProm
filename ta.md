@@ -2,12 +2,17 @@
 -- List CM8 search templates and entry templates with the
 -- users/groups from their bound ACLs.
 --
+-- NOTE: ICMSTITEMTYPEDEFS does not store the item type name
+-- directly. The name lives in ICMSTNLSKEYWORDS, joined by
+-- KeywordCode = ItemTypeID, filtered to KeywordClass = 2
+-- (item type names).
+--
 -- Before running:
---   1. Run the ComponentTypeID lookup query for 'ICMSearch' and
---      'ICMEntryTemplate' separately, then replace the
---      ICMUT00303001 placeholder below with the correct
---      ICMUT<ComponentTypeID>001 table for each item type
---      (they will be different tables).
+--   1. Run the ComponentTypeID lookup for 'ICMSearch' and
+--      'ICMEntryTemplate' separately (KeywordClass = 5), then
+--      replace the ICMUT00303001 placeholder below with the
+--      correct ICMUT<ComponentTypeID>001 table for each item
+--      type (they will be different tables).
 --   2. Validate table/column names against SYSCAT.TABLES /
 --      SYSCAT.COLUMNS on your library server, since exact
 --      names can shift slightly between CM8 versions.
@@ -15,7 +20,7 @@
 -- ============================================================
 
 SELECT
-    it.ItemTypeName            AS TemplateType,      -- 'ICMSearch' or 'ICMEntryTemplate'
+    kw.KeywordName             AS TemplateType,      -- 'ICMSearch' or 'ICMEntryTemplate'
     i.ItemID                   AS TemplateItemID,
     tbl.Title                  AS TemplateName,       -- from the item-type's own attribute table
     i.ACLCode,
@@ -33,6 +38,11 @@ INNER JOIN
     ICMSTITEMTYPEDEFS it
     ON it.ItemTypeID = i.ItemTypeID
 INNER JOIN
+    ICMSTNLSKEYWORDS  kw
+    ON kw.KeywordCode = it.ItemTypeID
+    AND kw.KeywordClass = 2
+    AND kw.LanguageCode = 'ENU'
+INNER JOIN
     ICMSTACCESSLISTS  al
     ON al.ACLCode = i.ACLCode
 INNER JOIN
@@ -45,9 +55,9 @@ LEFT JOIN
     ICMUT00303001    tbl        -- placeholder: swap for the real ICMUT<CompTypeID>001 table
     ON tbl.ItemID = i.ItemID
 WHERE
-    it.ItemTypeName IN ('ICMSearch', 'ICMEntryTemplate')
+    kw.KeywordName IN ('ICMSearch', 'ICMEntryTemplate')
 ORDER BY
-    it.ItemTypeName,
+    kw.KeywordName,
     TemplateName,
     EntryKind DESC
 FOR READ ONLY WITH UR;
